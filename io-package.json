@@ -1,0 +1,110 @@
+{
+    "common": {
+        "name": "zeropv",
+        "version": "0.0.1",
+        "news": {
+            "0.0.1": {
+                "en": "initial release",
+                "de": "Erstveröffentlichung",
+                "ru": "Начальная версия",
+                "pt": "lançamento inicial",
+                "nl": "Eerste uitgave",
+                "fr": "Première version",
+                "it": "Versione iniziale",
+                "es": "Versión inicial",
+                "pl": "Pierwsze wydanie",
+                "uk": "Початкова версія",
+                "zh-cn": "首次出版"
+            }
+        },
+        "titleLang": {
+            "en": "zeropv",
+            "de": "ZeroPV",
+            "ru": "Zeropv",
+            "pt": "Zeropv",
+            "nl": "Zeropv",
+            "fr": "zéropv",
+            "it": "zeropv",
+            "es": "zeropv",
+            "pl": "zeropv",
+            "uk": "Zeropv",
+            "zh-cn": "Zeropv"
+        },
+        "desc": {
+            "en": "Controls photo voltaic inverter output via OpenDTU to reduce grid feed-in",
+            "de": "Steuert die Photo-Voltaic-Wechselrichterausgabe über Opendtu, um die Gitterzufuhr zu reduzieren",
+            "ru": "Управление выходом на фото вольтового инвертора через Opendtu для уменьшения подачи сетки",
+            "pt": "Controla a saída do inversor Voltaico de fotografia via opendtu para reduzir a alimentação da grade",
+            "nl": "Regelt foto Voltaïsche inverteruitgang via OpenDTU om het roostervoeding te verminderen",
+            "fr": "Contrôle la sortie de l'onduleur photo voltaïque via OpenDtu pour réduire",
+            "it": "Controlla l'output di Inverter Voltaic Photo tramite OpenDTU per ridurre l'alimentazione della griglia",
+            "es": "Controla la salida del inversor fotovoltaico a través de Opendtu para reducir la alimentación de la red",
+            "pl": "Kontroluje fotoosobowe wyjście falownika za pośrednictwem Opendtu w celu zmniejszenia zasilania sieci",
+            "uk": "Контролює фото Voltaic інвертор через Opendtu для зменшення подачі сітки",
+            "zh-cn": "通过OPENDTU控制照片伏逆变器输出以减少网格馈电"
+        },
+        "authors": [
+            "heroalex <heroalex@gmx.de>"
+        ],
+        "keywords": [
+            "photovoltaic opendtu"
+        ],
+        "licenseInformation": {
+            "type": "free",
+            "license": "AGPL-3.0"
+        },
+        "platform": "Javascript/Node.js",
+        "icon": "zeropv.png",
+        "enabled": true,
+        "extIcon": "https://raw.githubusercontent.com/heroalex/ioBroker.zeropv/master/admin/zeropv.png",
+        "readme": "https://github.com/heroalex/ioBroker.zeropv/blob/master/README.md",
+        "loglevel": "info",
+        "tier": 3,
+        "mode": "daemon",
+        "type": "iot-systems",
+        "compact": true,
+        "connectionType": "local",
+        "dataSource": "poll",
+        "adminUI": {
+            "config": "json"
+        },
+        "dependencies": [
+            {
+                "js-controller": ">=6.0.11"
+            }
+        ],
+        "globalDependencies": [
+            {
+                "admin": "7.0.23"
+            }
+        ]
+    },
+    "native": {
+        "option1": true,
+        "option2": "42"
+    },
+    "objects": [],
+    "instanceObjects": [
+        {
+            "_id": "info",
+            "type": "channel",
+            "common": {
+                "name": "Information"
+            },
+            "native": {}
+        },
+        {
+            "_id": "info.connection",
+            "type": "state",
+            "common": {
+                "role": "indicator.connected",
+                "name": "Device or service connected",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        }
+    ]
+}
