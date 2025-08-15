@@ -26,66 +26,60 @@ class Zeropv extends utils.Adapter {
         // this.on('objectChange', this.onObjectChange.bind(this));
         // this.on('message', this.onMessage.bind(this));
         this.on('unload', this.onUnload.bind(this));
+        
+        this.pollingTimer = null;
+        this.lastGridPower = null;
+        this.lastPowerLimit = null;
     }
 
     /**
      * Is called when databases are connected and adapter received configuration.
      */
     async onReady() {
-        // Initialize your adapter here
+        this.log.info('ZeroPV adapter starting...');
 
         // Reset the connection indicator during startup
         this.setState('info.connection', false, true);
 
-        // The adapters config (in the instance object everything under the attribute "native") is accessible via
-        // this.config:
-        this.log.info('config option1: ' + this.config.option1);
-        this.log.info('config option2: ' + this.config.option2);
+        // Validate configuration
+        if (!this.config.powerSourceObject) {
+            this.log.error('No power source object configured!');
+            return;
+        }
 
-        /*
-        For every state in the system there has to be also an object of type state
-        Here a simple template for a boolean variable named "testVariable"
-        Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
-        */
-        await this.setObjectNotExistsAsync('testVariable', {
-            type: 'state',
-            common: {
-                name: 'testVariable',
-                type: 'boolean',
-                role: 'indicator',
-                read: true,
-                write: true,
-            },
-            native: {},
-        });
+        if (!this.config.powerControlObject) {
+            this.log.error('No power control object configured!');
+            return;
+        }
 
-        // In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-        this.subscribeStates('testVariable');
-        // You can also add a subscription for multiple states. The following line watches all states starting with "lights."
-        // this.subscribeStates('lights.*');
-        // Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
-        // this.subscribeStates('*');
+        if (!this.config.pollingInterval || this.config.pollingInterval < 1000) {
+            this.log.warn('Invalid polling interval, using default of 5000ms');
+            this.config.pollingInterval = 5000;
+        }
 
-        /*
-            setState examples
-            you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
-        */
-        // the variable testVariable is set to true as command (ack=false)
-        await this.setStateAsync('testVariable', true);
+        if (!this.config.feedInThreshold || this.config.feedInThreshold < 50) {
+            this.log.warn('Invalid feed-in threshold, using default of 100W');
+            this.config.feedInThreshold = 100;
+        }
 
-        // same thing, but the value is flagged "ack"
-        // ack should be always set to true if the value is received from or acknowledged from the target system
-        await this.setStateAsync('testVariable', { val: true, ack: true });
+        if (this.config.targetFeedIn === undefined || this.config.targetFeedIn === null) {
+            this.log.warn('Invalid target feed-in, using default of -800W');
+            this.config.targetFeedIn = -800;
+        }
 
-        // same thing, but the state is deleted after 30s (getState will return null afterwards)
-        await this.setStateAsync('testVariable', { val: true, ack: true, expire: 30 });
+        this.log.info(`Power source: ${this.config.powerSourceObject}`);
+        this.log.info(`Power control: ${this.config.powerControlObject}`);
+        this.log.info(`Polling interval: ${this.config.pollingInterval}ms`);
+        this.log.info(`Feed-in threshold: ${this.config.feedInThreshold}W`);
+        this.log.info(`Target feed-in: ${this.config.targetFeedIn}W`);
 
-        // examples for the checkPassword/checkGroup functions
-        let result = await this.checkPasswordAsync('admin', 'iobroker');
-        this.log.info('check user admin pw iobroker: ' + result);
+        // Create adapter states
+        await this.createStatesAsync();
 
-        result = await this.checkGroupAsync('admin', 'admin');
-        this.log.info('check group user admin group admin: ' + result);
+        // Start power monitoring
+        this.startPowerMonitoring();
+
+        this.setState('info.connection', true, true);
     }
 
     /**
@@ -94,12 +88,11 @@ class Zeropv extends utils.Adapter {
      */
     onUnload(callback) {
         try {
-            // Here you must clear all timeouts or intervals that may still be active
-            // clearTimeout(timeout1);
-            // clearTimeout(timeout2);
-            // ...
-            // clearInterval(interval1);
-
+            if (this.pollingTimer) {
+                clearTimeout(this.pollingTimer);
+                this.pollingTimer = null;
+            }
+            this.log.info('ZeroPV adapter stopped');
             callback();
         } catch (e) {
             callback();
@@ -155,6 +148,180 @@ class Zeropv extends utils.Adapter {
     //         }
     //     }
     // }
+
+    /**
+     * Create adapter states for power monitoring
+     */
+    async createStatesAsync() {
+        await this.setObjectNotExistsAsync('gridPower', {
+            type: 'state',
+            common: {
+                name: 'Grid power (+ = import, - = export)',
+                type: 'number',
+                role: 'value.power',
+                read: true,
+                write: false,
+                unit: 'W'
+            },
+            native: {}
+        });
+
+        await this.setObjectNotExistsAsync('feedingIn', {
+            type: 'state',
+            common: {
+                name: 'Feeding into grid',
+                type: 'boolean',
+                role: 'indicator',
+                read: true,
+                write: false,
+                def: false
+            },
+            native: {}
+        });
+
+        await this.setObjectNotExistsAsync('currentPowerLimit', {
+            type: 'state',
+            common: {
+                name: 'Current inverter power limit',
+                type: 'number',
+                role: 'value.power',
+                read: true,
+                write: false,
+                unit: 'W'
+            },
+            native: {}
+        });
+
+        await this.setObjectNotExistsAsync('powerControlActive', {
+            type: 'state',
+            common: {
+                name: 'Power control is active',
+                type: 'boolean',
+                role: 'indicator',
+                read: true,
+                write: false,
+                def: false
+            },
+            native: {}
+        });
+    }
+
+    /**
+     * Start periodic power monitoring
+     */
+    startPowerMonitoring() {
+        this.log.info('Starting power monitoring...');
+        this.pollPowerData();
+    }
+
+    /**
+     * Poll power data from configured source
+     */
+    async pollPowerData() {
+        try {
+            const powerState = await this.getForeignStateAsync(this.config.powerSourceObject);
+            
+            if (powerState && powerState.val !== null && powerState.val !== undefined) {
+                const powerValue = parseFloat(powerState.val);
+                
+                if (!isNaN(powerValue)) {
+                    await this.setStateAsync('gridPower', { val: powerValue, ack: true });
+                    
+                    const isFeedingIn = powerValue < 0;
+                    await this.setStateAsync('feedingIn', { val: isFeedingIn, ack: true });
+                    
+                    this.log.debug(`Grid power: ${powerValue}W, Feeding in: ${isFeedingIn}`);
+                    
+                    // Check if power control adjustment is needed
+                    await this.checkPowerControlAdjustment(powerValue);
+                } else {
+                    this.log.warn(`Invalid power value from ${this.config.powerSourceObject}: ${powerState.val}`);
+                }
+            } else {
+                this.log.warn(`No data received from ${this.config.powerSourceObject}`);
+            }
+        } catch (error) {
+            this.log.error(`Error reading power data: ${error.message}`);
+        }
+
+        this.pollingTimer = setTimeout(() => {
+            this.pollPowerData();
+        }, this.config.pollingInterval);
+    }
+
+    /**
+     * Check if power control adjustment is needed based on feed-in power
+     * @param {number} currentGridPower Current grid power (negative = feeding in)
+     */
+    async checkPowerControlAdjustment(currentGridPower) {
+        try {
+            // Only act if we're feeding into the grid (negative power)
+            if (currentGridPower >= 0) {
+                this.lastGridPower = currentGridPower;
+                await this.setStateAsync('powerControlActive', { val: false, ack: true });
+                return;
+            }
+
+            // Check if this is the first reading or if change is significant enough
+            if (this.lastGridPower === null) {
+                this.lastGridPower = currentGridPower;
+                return;
+            }
+
+            const powerChange = Math.abs(currentGridPower - this.lastGridPower);
+            
+            // Only adjust if change is above threshold
+            if (powerChange >= this.config.feedInThreshold) {
+                this.log.info(`Feed-in power changed by ${powerChange}W, adjusting inverter power limit`);
+                await this.adjustInverterPowerLimit(currentGridPower);
+            }
+
+            this.lastGridPower = currentGridPower;
+        } catch (error) {
+            this.log.error(`Error in power control adjustment: ${error.message}`);
+        }
+    }
+
+    /**
+     * Adjust inverter power limit to achieve target feed-in
+     * @param {number} currentGridPower Current grid power (negative = feeding in)
+     */
+    async adjustInverterPowerLimit(currentGridPower) {
+        try {
+            // Get current power limit from OpenDTU
+            const currentLimitState = await this.getForeignStateAsync(this.config.powerControlObject);
+            
+            if (!currentLimitState || currentLimitState.val === null || currentLimitState.val === undefined) {
+                this.log.warn(`Could not read current power limit from ${this.config.powerControlObject}`);
+                return;
+            }
+
+            const currentLimit = parseFloat(currentLimitState.val);
+            if (isNaN(currentLimit)) {
+                this.log.warn(`Invalid power limit value: ${currentLimitState.val}`);
+                return;
+            }
+
+            // Calculate the adjustment needed
+            // Current feed-in is negative, target feed-in is negative (e.g., -800W)
+            // If we're feeding in more than target, we need to reduce inverter output
+            const feedInDifference = currentGridPower - this.config.targetFeedIn;
+            const newLimit = Math.max(0, currentLimit - feedInDifference);
+
+            this.log.info(`Adjusting power limit from ${currentLimit}W to ${newLimit}W (grid power: ${currentGridPower}W, target: ${this.config.targetFeedIn}W)`);
+
+            // Set new power limit
+            await this.setForeignStateAsync(this.config.powerControlObject, newLimit);
+            
+            // Update our states
+            await this.setStateAsync('currentPowerLimit', { val: newLimit, ack: true });
+            await this.setStateAsync('powerControlActive', { val: true, ack: true });
+            
+            this.lastPowerLimit = newLimit;
+        } catch (error) {
+            this.log.error(`Error adjusting inverter power limit: ${error.message}`);
+        }
+    }
 
 }
 

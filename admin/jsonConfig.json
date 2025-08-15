@@ -2,14 +2,44 @@
     "i18n": true,
     "type": "panel",
     "items": {
-        "option1": {
-            "type": "checkbox",
-            "label": "option1",
+        "powerSourceObject": {
+            "type": "selectSendTo",
+            "label": "Power source object ID",
+            "help": "Select the ioBroker state containing power data (usually from Shelly energy meter)",
+            "command": "getObjects",
+            "jsonData": "{\"type\": \"state\", \"role\": \"value.power\"}",
             "newLine": true
         },
-        "option2": {
-            "type": "text",
-            "label": "option2",
+        "pollingInterval": {
+            "type": "number",
+            "label": "Polling interval (ms)",
+            "help": "How often to check the power data in milliseconds",
+            "min": 1000,
+            "max": 300000,
+            "newLine": true
+        },
+        "powerControlObject": {
+            "type": "selectSendTo",
+            "label": "OpenDTU power control object ID",
+            "help": "Select the OpenDTU power control state for setting inverter limits",
+            "command": "getObjects",
+            "jsonData": "{\"type\": \"state\", \"name\": \"*power_control*limit*\"}",
+            "newLine": true
+        },
+        "feedInThreshold": {
+            "type": "number",
+            "label": "Feed-in change threshold (W)",
+            "help": "Minimum change in feed-in power to trigger control adjustment",
+            "min": 50,
+            "max": 1000,
+            "def": 100,
+            "newLine": true
+        },
+        "targetFeedIn": {
+            "type": "number",
+            "label": "Target feed-in power (W)",
+            "help": "Target feed-in power (negative value for export to grid)",
+            "def": -800,
             "newLine": true
         }
     }

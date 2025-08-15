@@ -80,8 +80,11 @@
         ]
     },
     "native": {
-        "option1": true,
-        "option2": "42"
+        "powerSourceObject": "",
+        "pollingInterval": 5000,
+        "powerControlObject": "",
+        "feedInThreshold": 100,
+        "targetFeedIn": -800
     },
     "objects": [],
     "instanceObjects": [
@@ -99,6 +102,58 @@
             "common": {
                 "role": "indicator.connected",
                 "name": "Device or service connected",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        },
+        {
+            "_id": "gridPower",
+            "type": "state",
+            "common": {
+                "role": "value.power",
+                "name": "Grid power (+ = import, - = export)",
+                "type": "number",
+                "read": true,
+                "write": false,
+                "unit": "W"
+            },
+            "native": {}
+        },
+        {
+            "_id": "feedingIn",
+            "type": "state",
+            "common": {
+                "role": "indicator",
+                "name": "Feeding into grid",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        },
+        {
+            "_id": "currentPowerLimit",
+            "type": "state",
+            "common": {
+                "role": "value.power",
+                "name": "Current inverter power limit",
+                "type": "number",
+                "read": true,
+                "write": false,
+                "unit": "W"
+            },
+            "native": {}
+        },
+        {
+            "_id": "powerControlActive",
+            "type": "state",
+            "common": {
+                "role": "indicator",
+                "name": "Power control is active",
                 "type": "boolean",
                 "read": true,
                 "write": false,
