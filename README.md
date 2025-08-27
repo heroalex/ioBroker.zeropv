@@ -12,10 +12,51 @@
 
 ## zeropv adapter for ioBroker
 
-Controls photo voltaic inverter output via OpenDTU to reduce grid feed-in
+Controls photovoltaic inverter output via OpenDTU to reduce grid feed-in by automatically adjusting power limits based on current power consumption and feed-in levels.
+
+## Features
+
+- **Smart Feed-in Control**: Automatically adjusts inverter power output to maintain target grid feed-in levels
+- **Configurable Thresholds**: Set custom feed-in thresholds and target power levels
+- **Real-time Monitoring**: Continuously monitors grid power and inverter status
+- **Multi-language Support**: Available in 11 languages
+- **Integration Ready**: Works with existing energy meters (Shelly, etc.) and OpenDTU adapters
+
+## Configuration
+
+### Required Settings
+
+1. **Power Source Object**: Select the ioBroker state containing power data from your energy meter (usually negative for export, positive for import)
+2. **OpenDTU Power Control Object**: Select the OpenDTU power limit control state for your inverter
+3. **Polling Interval**: How often to check power data (1000-300000ms, default: 5000ms)
+4. **Feed-in Change Threshold**: Minimum power change to trigger adjustments (50-1000W, default: 100W)  
+5. **Target Feed-in Power**: Desired grid feed-in level (negative value, default: -800W)
+
+### How It Works
+
+1. The adapter monitors your power meter data at the configured interval
+2. When grid feed-in changes by more than the threshold, it calculates a new inverter power limit
+3. The new limit is set on your OpenDTU to achieve the target feed-in level
+4. Power control is only active during feed-in situations (negative grid power)
+
+## Prerequisites
+
+- ioBroker installation with Admin >= 7.0.23
+- Energy meter adapter (e.g., Shelly) providing power data
+- OpenDTU adapter for inverter control
+- Node.js >= 18
+
+## States
+
+The adapter creates the following states:
+
+- **info.connection**: Connection status to configured data sources
+- **gridPower**: Current grid power (+ = import, - = export) in Watts
+- **feedingIn**: Boolean indicating if currently feeding into grid
+- **currentPowerLimit**: Current inverter power limit in Watts
+- **powerControlActive**: Boolean indicating if power control is currently active
 
 ## Developer manual
-This section is intended for the developer. It can be deleted later.
 
 ### DISCLAIMER
 
@@ -39,14 +80,26 @@ You are almost done, only a few steps left:
 We've collected some [best practices](https://github.com/ioBroker/ioBroker.repositories#development-and-coding-best-practices) regarding ioBroker development and coding in general. If you're new to ioBroker or Node.js, you should
 check them out. If you're already experienced, you should also take a look at them - you might learn something new :)
 
+### Running Tests
+Several test commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `npm run test:package` | Validates package.json and io-package.json files |
+| `npm run test:integration` | Tests adapter startup with actual ioBroker instance |
+
+For running unit tests, use:
+```bash
+# Run comprehensive unit tests for adapter functionality
+npx mocha test/unit.js --require test/mocha.setup.js
+```
+
+**Note**: The template test file `main.test.js` has been removed due to Chai ES module compatibility issues. All functional tests are in `test/unit.js`.
+
 ### Scripts in `package.json`
-Several npm scripts are predefined for your convenience. You can run them using `npm run <scriptname>`
+Additional npm scripts are predefined for your convenience. You can run them using `npm run <scriptname>`
 | Script name | Description |
 |-------------|-------------|
-| `test:js` | Executes the tests you defined in `*.test.js` files. |
-| `test:package` | Ensures your `package.json` and `io-package.json` are valid. |
-| `test:integration` | Tests the adapter startup with an actual instance of ioBroker. |
-| `test` | Performs a minimal test run on package files and your tests. |
 | `translate` | Translates texts in your adapter to all required languages, see [`@iobroker/adapter-dev`](https://github.com/ioBroker/adapter-dev#manage-translations) for more details. |
 | `release` | Creates a new release, see [`@alcalzone/release-script`](https://github.com/AlCalzone/release-script#usage) for more details. |
 

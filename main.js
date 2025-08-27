@@ -39,7 +39,7 @@ class Zeropv extends utils.Adapter {
         this.log.info('ZeroPV adapter starting...');
 
         // Reset the connection indicator during startup
-        this.setState('info.connection', false, true);
+        await this.setState('info.connection', false, true);
 
         // Validate configuration
         if (!this.config.powerSourceObject) {
@@ -79,7 +79,7 @@ class Zeropv extends utils.Adapter {
         // Start power monitoring
         this.startPowerMonitoring();
 
-        this.setState('info.connection', true, true);
+        await this.setState('info.connection', true, true);
     }
 
     /**
@@ -211,7 +211,7 @@ class Zeropv extends utils.Adapter {
      */
     startPowerMonitoring() {
         this.log.info('Starting power monitoring...');
-        this.pollPowerData();
+        this.pollPowerData().catch(err => this.log.error(`Error in pollPowerData: ${err.message}`));
     }
 
     /**
@@ -225,10 +225,10 @@ class Zeropv extends utils.Adapter {
                 const powerValue = parseFloat(powerState.val);
                 
                 if (!isNaN(powerValue)) {
-                    await this.setStateAsync('gridPower', { val: powerValue, ack: true });
+                    await this.setState('gridPower', { val: powerValue, ack: true });
                     
                     const isFeedingIn = powerValue < 0;
-                    await this.setStateAsync('feedingIn', { val: isFeedingIn, ack: true });
+                    await this.setState('feedingIn', { val: isFeedingIn, ack: true });
                     
                     this.log.debug(`Grid power: ${powerValue}W, Feeding in: ${isFeedingIn}`);
                     
@@ -258,7 +258,7 @@ class Zeropv extends utils.Adapter {
             // Only act if we're feeding into the grid (negative power)
             if (currentGridPower >= 0) {
                 this.lastGridPower = currentGridPower;
-                await this.setStateAsync('powerControlActive', { val: false, ack: true });
+                await this.setState('powerControlActive', { val: false, ack: true });
                 return;
             }
 
@@ -314,8 +314,8 @@ class Zeropv extends utils.Adapter {
             await this.setForeignStateAsync(this.config.powerControlObject, newLimit);
             
             // Update our states
-            await this.setStateAsync('currentPowerLimit', { val: newLimit, ack: true });
-            await this.setStateAsync('powerControlActive', { val: true, ack: true });
+            await this.setState('currentPowerLimit', { val: newLimit, ack: true });
+            await this.setState('powerControlActive', { val: true, ack: true });
             
             this.lastPowerLimit = newLimit;
         } catch (error) {
