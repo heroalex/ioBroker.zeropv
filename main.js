@@ -261,11 +261,35 @@ class Zeropv extends utils.Adapter {
                 return;
             }
 
-            const powerChange = Math.abs(currentGridPower - this.lastGridPower);
+            // Calculate what the new inverter limit would be
+            const currentLimitState = await this.getForeignStateAsync(this.config.powerControlObject);
+            if (!currentLimitState || currentLimitState.val === null || currentLimitState.val === undefined) {
+                this.log.warn(`Could not read current power limit from ${this.config.powerControlObject}`);
+                this.lastGridPower = currentGridPower;
+                return;
+            }
+
+            const currentLimit = parseFloat(currentLimitState.val);
+            if (isNaN(currentLimit)) {
+                this.log.warn(`Invalid power limit value: ${currentLimitState.val}`);
+                this.lastGridPower = currentGridPower;
+                return;
+            }
+
+            // Calculate what the new limit would be
+            let newLimit;
+            if (currentGridPower >= 0) {
+                newLimit = currentLimit + currentGridPower;
+            } else {
+                const feedInDifference = currentGridPower - this.config.targetFeedIn;
+                newLimit = Math.max(0, currentLimit + feedInDifference);
+            }
+
+            // Only adjust if inverter limit change is above threshold
+            const limitChange = Math.abs(newLimit - currentLimit);
             
-            // Only adjust if change is above threshold
-            if (powerChange >= this.config.feedInThreshold) {
-                this.log.info(`Grid power changed by ${powerChange}W, adjusting inverter power limit`);
+            if (limitChange >= this.config.feedInThreshold) {
+                this.log.info(`Inverter limit would change by ${limitChange}W, adjusting inverter power limit`);
                 await this.adjustInverterPowerLimit(currentGridPower);
             } else {
                 await this.setState('powerControlActive', { val: false, ack: true });

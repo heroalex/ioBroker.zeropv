@@ -263,7 +263,7 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             }
         };
         
-        // Add the checkPowerControlAdjustment method from main.js
+        // Add the checkPowerControlAdjustment method from main.js with corrected threshold logic
         adapter.checkPowerControlAdjustment = async function(currentGridPower) {
             try {
                 // Check if this is the first reading
@@ -272,11 +272,35 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
                     return;
                 }
 
-                const powerChange = Math.abs(currentGridPower - this.lastGridPower);
+                // Calculate what the new inverter limit would be
+                const currentLimitState = await this.getForeignStateAsync(this.config.powerControlObject);
+                if (!currentLimitState || currentLimitState.val === null || currentLimitState.val === undefined) {
+                    this.log.warn(`Could not read current power limit from ${this.config.powerControlObject}`);
+                    this.lastGridPower = currentGridPower;
+                    return;
+                }
+
+                const currentLimit = parseFloat(currentLimitState.val);
+                if (isNaN(currentLimit)) {
+                    this.log.warn(`Invalid power limit value: ${currentLimitState.val}`);
+                    this.lastGridPower = currentGridPower;
+                    return;
+                }
+
+                // Calculate what the new limit would be
+                let newLimit;
+                if (currentGridPower >= 0) {
+                    newLimit = currentLimit + currentGridPower;
+                } else {
+                    const feedInDifference = currentGridPower - this.config.targetFeedIn;
+                    newLimit = Math.max(0, currentLimit + feedInDifference);
+                }
+
+                // Check if the inverter power limit change is above threshold
+                const limitChange = Math.abs(newLimit - currentLimit);
                 
-                // Only adjust if change is above threshold
-                if (powerChange >= this.config.feedInThreshold) {
-                    this.log.info(`Grid power changed by ${powerChange}W, adjusting inverter power limit`);
+                if (limitChange >= this.config.feedInThreshold) {
+                    this.log.info(`Inverter limit would change by ${limitChange}W, adjusting inverter power limit`);
                     await this.adjustInverterPowerLimit(currentGridPower);
                 } else {
                     await this.setStateAsync('powerControlActive', { val: false, ack: true });
@@ -295,31 +319,33 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
 
     describe('checkPowerControlAdjustment()', function() {
         
-        it('should handle positive grid power and adjust if change is significant', async function() {
+        it('should handle positive grid power and adjust if inverter limit change is significant', async function() {
             // Arrange
             adapter.lastGridPower = 200;
             adapter.setStateAsync = sinon.stub().resolves();
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 1000 }); // Current limit 1000W
             
-            // Act - change of 1300W is above threshold
+            // Act - grid power 1500W, current limit 1000W -> new limit would be 2500W (change of 1500W, above 100W threshold)
             await adapter.checkPowerControlAdjustment(1500);
             
             // Assert
             assert.equal(adapter.lastGridPower, 1500);
             assert(adapter.adjustInverterPowerLimit.calledWith(1500));
-            assert(adapter.log.info.calledWith('Grid power changed by 1300W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 1500W, adjusting inverter power limit'));
         });
 
-        it('should set powerControlActive to false when change is below threshold', async function() {
+        it('should set powerControlActive to false when inverter limit change is below threshold', async function() {
             // Arrange
-            adapter.lastGridPower = 50;
+            adapter.lastGridPower = -850; // Previously feeding in 850W
             adapter.setStateAsync = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             
-            // Act - change of 50W is below threshold
-            await adapter.checkPowerControlAdjustment(0);
+            // Act - now feeding in 800W (target is -800W), so new limit would be 2000 + (-800 - (-800)) = 2000W (no change)
+            await adapter.checkPowerControlAdjustment(-800);
             
             // Assert
-            assert.equal(adapter.lastGridPower, 0);
+            assert.equal(adapter.lastGridPower, -800);
             assert(adapter.setStateAsync.calledWith('powerControlActive', { val: false, ack: true }));
             assert(!adapter.adjustInverterPowerLimit.called);
         });
@@ -337,10 +363,12 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             assert(!adapter.adjustInverterPowerLimit.called);
         });
 
-        it('should not adjust power when change is below threshold', async function() {
+        it('should not adjust power when inverter limit change is below threshold', async function() {
             // Arrange
             adapter.lastGridPower = -1000;
-            const newPower = -1050; // Change of 50W, below threshold of 100W
+            adapter.setStateAsync = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
+            const newPower = -850; // Target is -800W, so new limit would be 2000 + (-850 - (-800)) = 1950W (change of 50W, below 100W threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -348,14 +376,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(!adapter.adjustInverterPowerLimit.called);
-            assert(!adapter.log.info.called);
+            assert(adapter.setStateAsync.calledWith('powerControlActive', { val: false, ack: true }));
         });
 
-        it('should adjust power when change is above threshold', async function() {
+        it('should adjust power when inverter limit change is above threshold', async function() {
             // Arrange
             adapter.lastGridPower = -1000;
-            const newPower = -1200; // Change of 200W, above threshold of 100W
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = -1200; // Target is -800W, so new limit would be 2000 + (-1200 - (-800)) = 1600W (change of 400W, above 100W threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -363,14 +392,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 200W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 400W, adjusting inverter power limit'));
         });
 
         it('should adjust power when feed-in decreases significantly', async function() {
             // Arrange
             adapter.lastGridPower = -1500;
-            const newPower = -900; // Change of 600W (less feed-in), above threshold
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = -900; // Target is -800W, so new limit would be 2000 + (-900 - (-800)) = 1900W (change of 100W, exactly at threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -378,14 +408,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 600W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 100W, adjusting inverter power limit'));
         });
 
-        it('should adjust power when change exactly equals threshold', async function() {
+        it('should adjust power when inverter limit change exactly equals threshold', async function() {
             // Arrange
             adapter.lastGridPower = -1000;
-            const newPower = -1100; // Change of exactly 100W (threshold)
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = -700; // Target is -800W, so new limit would be 2000 + (-700 - (-800)) = 2100W (change of exactly 100W)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -393,12 +424,30 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 100W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 100W, adjusting inverter power limit'));
+        });
+
+        it('should NOT adjust when grid power change is large but inverter limit change is small', async function() {
+            // Arrange - This test demonstrates the flaw in the old logic
+            adapter.lastGridPower = -200; // Previously feeding in 200W
+            adapter.setStateAsync = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
+            const newPower = -850; // Now feeding in 850W (grid change of 650W, above old threshold)
+            // Target is -800W, so new limit would be 2000 + (-850 - (-800)) = 1950W (inverter change of only 50W, below threshold)
+            
+            // Act
+            await adapter.checkPowerControlAdjustment(newPower);
+            
+            // Assert
+            assert.equal(adapter.lastGridPower, newPower);
+            assert(!adapter.adjustInverterPowerLimit.called);
+            assert(adapter.setStateAsync.calledWith('powerControlActive', { val: false, ack: true }));
         });
 
         it('should handle adjustInverterPowerLimit errors gracefully', async function() {
             // Arrange
             adapter.lastGridPower = -1000;
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             const newPower = -1200;
             const error = new Error('Inverter communication failed');
             adapter.adjustInverterPowerLimit = sinon.stub().rejects(error);
@@ -412,13 +461,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
         });
 
         it('should handle setStateAsync errors gracefully', async function() {
-            // Arrange - small change that should set powerControlActive to false
-            adapter.lastGridPower = 50;
+            // Arrange - small inverter limit change that should set powerControlActive to false
+            adapter.lastGridPower = -850;
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             const error = new Error('State update failed');
             adapter.setStateAsync = sinon.stub().rejects(error);
+            const newPower = -820; // Target is -800W, so new limit would be 2000 + (-820 - (-800)) = 1980W (change of 20W, below threshold)
             
-            // Act - change of 50W is below threshold, should call setStateAsync
-            await adapter.checkPowerControlAdjustment(100);
+            // Act - inverter limit change of 20W is below threshold, should call setStateAsync
+            await adapter.checkPowerControlAdjustment(newPower);
             
             // Assert
             assert(adapter.log.error.calledWith('Error in power control adjustment: State update failed'));
@@ -427,8 +478,9 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
         it('should work with decimal power values', async function() {
             // Arrange
             adapter.lastGridPower = -1000.5;
-            const newPower = -1150.7; // Change of 150.2W, above threshold
+            adapter.getForeignStateAsync.resolves({ val: 2000.5 }); // Current limit 2000.5W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = -1150.7; // Target is -800W, so new limit would be 2000.5 + (-1150.7 - (-800)) = 1649.8W (change of 350.7W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -436,31 +488,37 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            // Check for the actual calculated difference (might have floating point precision issues)
-            const expectedDifference = Math.abs(-1150.7 - (-1000.5));
-            assert(adapter.log.info.calledWith(`Grid power changed by ${expectedDifference}W, adjusting inverter power limit`));
+            // Check if the log was called with a message that includes the calculated difference (handle floating point precision)
+            const logCalls = adapter.log.info.getCalls();
+            const hasCorrectLog = logCalls.some(call => 
+                call.args[0].includes('Inverter limit would change by') && 
+                call.args[0].includes('350.7')
+            );
+            assert(hasCorrectLog, `Expected log message about 350.7W change, got: ${logCalls.map(c => c.args[0]).join(', ')}`);
         });
 
-        it('should adjust power when transitioning from consuming to feeding with significant change', async function() {
-            // Arrange - the logic treats any feed-in as eligible for adjustment if change is significant
-            adapter.lastGridPower = 500; // Was consuming
-            const newPower = -1200; // Now feeding in significantly (change of 1700W, above threshold)
-            adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 1700W, adjusting inverter power limit'));
-        });
-
-        it('should not adjust when transitioning from consuming to feeding with small change', async function() {
+        it('should adjust power when transitioning from consuming to feeding with significant inverter limit change', async function() {
             // Arrange
-            adapter.lastGridPower = 50; // Was consuming slightly
-            const newPower = -30; // Now feeding in slightly (change of 80W, below threshold of 100W)
+            adapter.lastGridPower = 500; // Was consuming 500W
+            adapter.getForeignStateAsync.resolves({ val: 1500 }); // Current limit 1500W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = -1200; // Now feeding in 1200W, target is -800W, so new limit would be 1500 + (-1200 - (-800)) = 1100W (change of 400W, above threshold)
+            
+            // Act
+            await adapter.checkPowerControlAdjustment(newPower);
+            
+            // Assert
+            assert.equal(adapter.lastGridPower, newPower);
+            assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 400W, adjusting inverter power limit'));
+        });
+
+        it('should not adjust when transitioning from consuming to feeding with small inverter limit change', async function() {
+            // Arrange
+            adapter.lastGridPower = 50; // Was consuming 50W
+            adapter.setStateAsync = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 1500 }); // Current limit 1500W
+            const newPower = -850; // Now feeding in 850W, target is -800W, so new limit would be 1500 + (-850 - (-800)) = 1450W (change of 50W, below threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -468,14 +526,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(!adapter.adjustInverterPowerLimit.called);
-            assert(!adapter.log.info.called);
+            assert(adapter.setStateAsync.calledWith('powerControlActive', { val: false, ack: true }));
         });
 
-        it('should handle transition from feeding to consuming with significant change', async function() {
+        it('should handle transition from feeding to consuming with significant inverter limit change', async function() {
             // Arrange
-            adapter.lastGridPower = -800; // Was feeding in
-            const newPower = 300; // Now consuming (change of 1100W, above threshold)
+            adapter.lastGridPower = -800; // Was feeding in 800W
+            adapter.getForeignStateAsync.resolves({ val: 1500 }); // Current limit 1500W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
+            const newPower = 300; // Now consuming 300W, so new limit would be 1500 + 300 = 1800W (change of 300W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -483,17 +542,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 1100W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 300W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change when signs differ (negative to positive)', async function() {
+        it('should correctly calculate inverter limit change when signs differ (negative to positive)', async function() {
             // Arrange - transition from feeding in to consuming
             adapter.lastGridPower = -500; // Was feeding 500W into grid
-            const newPower = 300; // Now consuming 300W from grid
+            adapter.getForeignStateAsync.resolves({ val: 1200 }); // Current limit 1200W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(300 - (-500)) = Math.abs(800) = 800W
-            // Since change (800W) > threshold (100W), should trigger adjustment
+            const newPower = 300; // Now consuming 300W from grid, so new limit would be 1200 + 300 = 1500W (change of 300W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -501,17 +558,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 800W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 300W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change when signs differ (positive to negative)', async function() {
+        it('should correctly calculate inverter limit change when signs differ (positive to negative)', async function() {
             // Arrange - transition from consuming to feeding in
             adapter.lastGridPower = 200; // Was consuming 200W from grid
-            const newPower = -600; // Now feeding 600W into grid
+            adapter.getForeignStateAsync.resolves({ val: 1800 }); // Current limit 1800W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(-600 - 200) = Math.abs(-800) = 800W
-            // Since change (800W) > threshold (100W), should trigger adjustment
+            const newPower = -600; // Now feeding 600W into grid, target is -800W, so new limit would be 1800 + (-600 - (-800)) = 2000W (change of 200W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -519,17 +574,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 800W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 200W, adjusting inverter power limit'));
         });
 
         it('should handle extreme sign changes correctly', async function() {
             // Arrange - large transition from high consumption to high feed-in
             adapter.lastGridPower = 2000; // Was consuming 2000W from grid
-            const newPower = -1500; // Now feeding 1500W into grid
+            adapter.getForeignStateAsync.resolves({ val: 3000 }); // Current limit 3000W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(-1500 - 2000) = Math.abs(-3500) = 3500W
-            // Since change (3500W) > threshold (100W), should trigger adjustment
+            const newPower = -1500; // Now feeding 1500W into grid, target is -800W, so new limit would be 3000 + (-1500 - (-800)) = 2300W (change of 700W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -537,17 +590,15 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 3500W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 700W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change for positive to positive transition with large change', async function() {
+        it('should correctly calculate inverter limit change for positive to positive transition with large change', async function() {
             // Arrange - transition between different consumption levels
             adapter.lastGridPower = 100; // Was consuming 100W from grid
-            const newPower = 800; // Now consuming 800W from grid
+            adapter.getForeignStateAsync.resolves({ val: 1200 }); // Current limit 1200W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(800 - 100) = 700W
-            // Since change (700W) > threshold (100W), should trigger adjustment
+            const newPower = 800; // Now consuming 800W from grid, so new limit would be 1200 + 800 = 2000W (change of 800W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -555,35 +606,31 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 700W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 800W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change for positive to positive transition with small change', async function() {
-            // Arrange - small transition between consumption levels
-            adapter.lastGridPower = 500; // Was consuming 500W from grid
-            const newPower = 550; // Now consuming 550W from grid
+        it('should not adjust when consuming power results in small inverter limit change', async function() {
+            // Arrange - small consumption that results in small inverter change
+            adapter.lastGridPower = 1000; // Was consuming 1000W from grid
             adapter.setStateAsync = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(550 - 500) = 50W
-            // Since change (50W) < threshold (100W), should set powerControlActive to false
+            adapter.getForeignStateAsync.resolves({ val: 2950 }); // Current limit 2950W
+            const newPower = 1050; // Now consuming 1050W from grid, so new limit would be 2950 + 1050 = 4000W (change of 1050W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
             
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.setStateAsync.calledWith('powerControlActive', { val: false, ack: true }));
-            assert(!adapter.adjustInverterPowerLimit.called);
+            assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 1050W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change for negative to negative transition with large change', async function() {
+        it('should correctly calculate inverter limit change for negative to negative transition with large change', async function() {
             // Arrange - transition between different feed-in levels
             adapter.lastGridPower = -500; // Was feeding 500W into grid
-            const newPower = -1200; // Now feeding 1200W into grid
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
             adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(-1200 - (-500)) = Math.abs(-700) = 700W
-            // Since change (700W) > threshold (100W), should trigger adjustment
+            const newPower = -1200; // Now feeding 1200W into grid, target is -800W, so new limit would be 2000 + (-1200 - (-800)) = 1600W (change of 400W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
@@ -591,25 +638,23 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
             assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
-            assert(adapter.log.info.calledWith('Grid power changed by 700W, adjusting inverter power limit'));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 400W, adjusting inverter power limit'));
         });
 
-        it('should correctly calculate power change for negative to negative transition with small change', async function() {
+        it('should correctly calculate inverter limit change for negative to negative transition with small change', async function() {
             // Arrange - small transition between feed-in levels
             adapter.lastGridPower = -1000; // Was feeding 1000W into grid
-            const newPower = -1050; // Now feeding 1050W into grid
-            adapter.adjustInverterPowerLimit = sinon.stub().resolves();
-            
-            // Expected power change: Math.abs(-1050 - (-1000)) = Math.abs(-50) = 50W
-            // Since change (50W) < threshold (100W), should not trigger adjustment
+            adapter.setStateAsync = sinon.stub().resolves();
+            adapter.getForeignStateAsync.resolves({ val: 2000 }); // Current limit 2000W
+            const newPower = -1050; // Now feeding 1050W into grid, target is -800W, so new limit would be 2000 + (-1050 - (-800)) = 1750W (change of 250W, above threshold)
             
             // Act
             await adapter.checkPowerControlAdjustment(newPower);
             
             // Assert
             assert.equal(adapter.lastGridPower, newPower);
-            assert(!adapter.adjustInverterPowerLimit.called);
-            assert(!adapter.log.info.called);
+            assert(adapter.adjustInverterPowerLimit.calledWith(newPower));
+            assert(adapter.log.info.calledWith('Inverter limit would change by 250W, adjusting inverter power limit'));
         });
     });
 });
