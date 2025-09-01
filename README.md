@@ -34,10 +34,112 @@ Controls photovoltaic inverter output via OpenDTU to reduce grid feed-in by auto
 
 ### How It Works
 
-1. The adapter monitors your power meter data at the configured interval
-2. When grid feed-in changes by more than the threshold, it calculates a new inverter power limit
-3. The new limit is set on your OpenDTU to achieve the target feed-in level
-4. Power control is only active during feed-in situations (negative grid power)
+1. **Power Monitoring**: The adapter polls the configured power source object at the specified interval (default: 5 seconds)
+2. **Change Detection**: Compares current grid power with the last reading to calculate power change
+3. **Threshold Check**: Only triggers power adjustments when the power change exceeds the configured threshold (default: 100W)
+4. **Power Limit Calculation**:
+   - **When consuming from grid** (positive power): Increases inverter limit by the consumption amount to reduce grid import
+   - **When feeding into grid** (negative power): Adjusts inverter limit to achieve the target feed-in level
+   - **Formula for feed-in**: `newLimit = max(0, currentLimit + (currentGridPower - targetFeedIn))`
+5. **State Updates**: Updates all adapter states and sends the new power limit to OpenDTU
+6. **Error Handling**: Gracefully handles communication errors and invalid data values
+
+### Power Control Logic
+
+The adapter implements intelligent power control with these behaviors:
+
+- **First reading**: Stores initial power value without making adjustments
+- **Threshold-based control**: Only adjusts when power change ≥ configured threshold (prevents constant micro-adjustments)
+- **Bidirectional logic**: Handles both grid consumption and feed-in scenarios
+- **Minimum limit enforcement**: Power limits are never set below 0W
+- **Continuous monitoring**: Schedules next polling cycle regardless of errors
+
+### Implementation Details
+
+#### Core Methods
+
+- **`pollPowerData()`** (`main.js:220`): Main polling loop that reads power data from the configured source
+  - Reads from `config.powerSourceObject` via `getForeignStateAsync()`
+  - Validates and parses power values (supports numeric strings)
+  - Updates `gridPower` and `feedingIn` states
+  - Calls `checkPowerControlAdjustment()` for power control logic
+  - Schedules next polling cycle using `setTimeout()`
+
+- **`checkPowerControlAdjustment()`** (`main.js:256`): Determines if power control adjustment is needed
+  - Skips adjustment on first reading (establishes baseline)
+  - Calculates absolute power change between current and last reading
+  - Only triggers adjustment if change ≥ `feedInThreshold`
+  - Sets `powerControlActive` to false when change is below threshold
+  - Calls `adjustInverterPowerLimit()` when adjustment is needed
+
+- **`adjustInverterPowerLimit()`** (`main.js:284`): Calculates and applies new power limits
+  - Reads current limit from OpenDTU via `config.powerControlObject`
+  - **Consumption logic** (gridPower ≥ 0): `newLimit = currentLimit + gridPower`
+  - **Feed-in logic** (gridPower < 0): `newLimit = max(0, currentLimit + (gridPower - targetFeedIn))`
+  - Updates OpenDTU limit via `setForeignStateAsync()`
+  - Updates adapter states: `currentPowerLimit` and `powerControlActive`
+
+#### Error Handling
+
+The adapter includes comprehensive error handling:
+
+- **Invalid power values**: Logs warnings for non-numeric or null/undefined values
+- **Communication failures**: Gracefully handles errors when reading from or writing to ioBroker states
+- **Configuration validation**: Validates all required settings on startup with fallback defaults
+- **State management**: Maintains connection status and error recovery
+- **Continuous operation**: Ensures polling continues even after errors
+
+#### Configuration Validation
+
+On startup, the adapter validates and applies defaults for:
+- `pollingInterval`: Minimum 1000ms, defaults to 5000ms
+- `feedInThreshold`: Minimum 50W, defaults to 100W  
+- `targetFeedIn`: Defaults to -800W if not configured
+- Required objects: `powerSourceObject` and `powerControlObject` must be configured
+
+#### Test Coverage
+
+The adapter includes comprehensive unit tests (`test/unit.js`) covering:
+
+**Power Data Polling Tests**:
+- Valid positive/negative/zero power values
+- String numeric value parsing
+- Invalid value handling (non-numeric, null, undefined)
+- State update verification
+- Error handling for communication failures
+- Polling cycle scheduling
+
+**Power Control Adjustment Tests**:
+- Threshold-based triggering (above/below/exactly at threshold)
+- First reading handling (no adjustment)
+- Bidirectional power transitions (consumption ↔ feed-in)
+- Decimal value calculations
+- Error handling and state consistency
+
+**Power Limit Adjustment Tests**:
+- Feed-in scenarios (above/below/at target)
+- Consumption scenarios (positive grid power)
+- Minimum limit enforcement (never below 0W)
+- Invalid limit value handling
+- Communication error handling
+- State update verification
+
+#### Example Scenarios
+
+**Scenario 1: High Feed-in Reduction**
+- Current: Feeding -1200W into grid (target: -800W)
+- Current limit: 2000W
+- Action: Reduce to 1800W (`2000 + (-1200 - (-800)) = 1800W`)
+
+**Scenario 2: Low Feed-in Increase**  
+- Current: Feeding -500W into grid (target: -800W)
+- Current limit: 1500W
+- Action: Increase to 1800W (`1500 + (-500 - (-800)) = 1800W`)
+
+**Scenario 3: Grid Consumption**
+- Current: Consuming +300W from grid
+- Current limit: 1200W
+- Action: Increase to 1500W (`1200 + 300 = 1500W`)
 
 ## Prerequisites
 
