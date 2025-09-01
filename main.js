@@ -59,6 +59,18 @@ class Zeropv extends utils.Adapter {
                 this.log.error(`Inverter ${i + 1} has no power control object configured!`);
                 return;
             }
+            
+            // Validate and enforce maximum power limit
+            if (inverter.maxPower === undefined || inverter.maxPower === null) {
+                inverter.maxPower = 2250;
+                this.log.warn(`Inverter ${i + 1} has no max power configured, using default 2250W`);
+            } else if (inverter.maxPower > 2250) {
+                inverter.maxPower = 2250;
+                this.log.warn(`Inverter ${i + 1} max power exceeded 2250W limit, clamped to 2250W`);
+            } else if (inverter.maxPower < 0) {
+                inverter.maxPower = 2250;
+                this.log.warn(`Inverter ${i + 1} has invalid max power, using default 2250W`);
+            }
         }
 
         if (!this.config.pollingInterval || this.config.pollingInterval < 1000) {
@@ -394,14 +406,21 @@ class Zeropv extends utils.Adapter {
                 const inverter = this.config.inverters[limit.index];
                 const inverterName = inverter.name || `Inverter ${limit.index + 1}`;
                 
-                this.log.debug(`Setting ${inverterName} limit from ${limit.value}W to ${newLimitPerInverter}W`);
+                // Enforce maximum power limit per inverter
+                const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
+                
+                if (clampedLimit !== newLimitPerInverter) {
+                    this.log.warn(`${inverterName} limit clamped from ${newLimitPerInverter}W to ${clampedLimit}W (max: ${inverter.maxPower || 2250}W)`);
+                }
+                
+                this.log.debug(`Setting ${inverterName} limit from ${limit.value}W to ${clampedLimit}W`);
                 
                 adjustmentPromises.push(
-                    this.setForeignStateAsync(limit.powerControlObject, newLimitPerInverter)
+                    this.setForeignStateAsync(limit.powerControlObject, clampedLimit)
                         .then(async () => {
-                            this.lastPowerLimits.set(limit.index, newLimitPerInverter);
+                            this.lastPowerLimits.set(limit.index, clampedLimit);
                             // Update individual inverter state
-                            await this.setState(`inverter${limit.index}.powerLimit`, { val: newLimitPerInverter, ack: true });
+                            await this.setState(`inverter${limit.index}.powerLimit`, { val: clampedLimit, ack: true });
                         })
                         .catch(error => {
                             this.log.error(`Error setting limit for ${inverterName}: ${error.message}`);

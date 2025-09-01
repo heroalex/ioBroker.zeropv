@@ -38,6 +38,16 @@
                     "label": "Name",
                     "help": "Display name for this inverter",
                     "width": "200px"
+                },
+                {
+                    "type": "number",
+                    "attr": "maxPower",
+                    "label": "Max power (W)",
+                    "help": "Maximum power limit for this inverter",
+                    "min": 0,
+                    "max": 2250,
+                    "default": 2250,
+                    "width": "150px"
                 }
             ],
             "newLine": true
