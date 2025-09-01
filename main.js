@@ -58,7 +58,7 @@ class Zeropv extends utils.Adapter {
         }
 
         if (!this.config.feedInThreshold || this.config.feedInThreshold < 50) {
-            this.log.warn('Invalid feed-in threshold, using default of 100W');
+            this.log.warn('Invalid inverter limit change threshold, using default of 100W');
             this.config.feedInThreshold = 100;
         }
 
@@ -70,7 +70,7 @@ class Zeropv extends utils.Adapter {
         this.log.info(`Power source: ${this.config.powerSourceObject}`);
         this.log.info(`Power control: ${this.config.powerControlObject}`);
         this.log.info(`Polling interval: ${this.config.pollingInterval}ms`);
-        this.log.info(`Feed-in threshold: ${this.config.feedInThreshold}W`);
+        this.log.info(`Inverter limit change threshold: ${this.config.feedInThreshold}W`);
         this.log.info(`Target feed-in: ${this.config.targetFeedIn}W`);
 
         // Create adapter states
@@ -250,7 +250,7 @@ class Zeropv extends utils.Adapter {
     }
 
     /**
-     * Check if power control adjustment is needed based on feed-in power
+     * Check if power control adjustment is needed based on calculated inverter limit change
      * @param {number} currentGridPower Current grid power (negative = feeding in)
      */
     async checkPowerControlAdjustment(currentGridPower) {

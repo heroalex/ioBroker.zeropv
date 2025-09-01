@@ -29,14 +29,14 @@ Controls photovoltaic inverter output via OpenDTU to reduce grid feed-in by auto
 1. **Power Source Object**: Select the ioBroker state containing power data from your energy meter (usually negative for export, positive for import)
 2. **OpenDTU Power Control Object**: Select the OpenDTU power limit control state for your inverter
 3. **Polling Interval**: How often to check power data (1000-300000ms, default: 5000ms)
-4. **Feed-in Change Threshold**: Minimum power change to trigger adjustments (50-1000W, default: 100W)  
+4. **Feed-in Change Threshold**: Minimum inverter power limit change to trigger adjustments (50-1000W, default: 100W)  
 5. **Target Feed-in Power**: Desired grid feed-in level (negative value, default: -800W)
 
 ### How It Works
 
 1. **Power Monitoring**: The adapter polls the configured power source object at the specified interval (default: 5 seconds)
-2. **Change Detection**: Compares current grid power with the last reading to calculate power change
-3. **Threshold Check**: Only triggers power adjustments when the power change exceeds the configured threshold (default: 100W)
+2. **Change Detection**: Compares current grid power with the last reading to calculate required inverter power limit change
+3. **Threshold Check**: Only triggers power adjustments when the calculated inverter limit change exceeds the configured threshold (default: 100W)
 4. **Power Limit Calculation**:
    - **When consuming from grid** (positive power): Increases inverter limit by the consumption amount to reduce grid import
    - **When feeding into grid** (negative power): Adjusts inverter limit to achieve the target feed-in level
@@ -49,7 +49,7 @@ Controls photovoltaic inverter output via OpenDTU to reduce grid feed-in by auto
 The adapter implements intelligent power control with these behaviors:
 
 - **First reading**: Stores initial power value without making adjustments
-- **Threshold-based control**: Only adjusts when power change ≥ configured threshold (prevents constant micro-adjustments)
+- **Threshold-based control**: Only adjusts when calculated inverter limit change ≥ configured threshold (prevents constant micro-adjustments)
 - **Bidirectional logic**: Handles both grid consumption and feed-in scenarios
 - **Minimum limit enforcement**: Power limits are never set below 0W
 - **Continuous monitoring**: Schedules next polling cycle regardless of errors
@@ -67,9 +67,10 @@ The adapter implements intelligent power control with these behaviors:
 
 - **`checkPowerControlAdjustment()`** (`main.js:256`): Determines if power control adjustment is needed
   - Skips adjustment on first reading (establishes baseline)
-  - Calculates absolute power change between current and last reading
-  - Only triggers adjustment if change ≥ `feedInThreshold`
-  - Sets `powerControlActive` to false when change is below threshold
+  - Reads current inverter power limit from OpenDTU
+  - Calculates what the new inverter limit would be based on current grid power
+  - Only triggers adjustment if calculated limit change ≥ `feedInThreshold`
+  - Sets `powerControlActive` to false when limit change is below threshold
   - Calls `adjustInverterPowerLimit()` when adjustment is needed
 
 - **`adjustInverterPowerLimit()`** (`main.js:284`): Calculates and applies new power limits
