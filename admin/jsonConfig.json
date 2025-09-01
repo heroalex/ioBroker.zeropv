@@ -18,12 +18,28 @@
             "max": 300000,
             "newLine": true
         },
-        "powerControlObject": {
-            "type": "selectSendTo",
-            "label": "OpenDTU power control object ID",
-            "help": "Select the OpenDTU power control state for setting inverter limits",
-            "command": "getObjects",
-            "jsonData": "{\"type\": \"state\", \"name\": \"*power_control*limit*\"}",
+        "inverters": {
+            "type": "table",
+            "label": "Inverters",
+            "help": "Configure multiple inverters for power control",
+            "items": [
+                {
+                    "type": "selectSendTo",
+                    "attr": "powerControlObject",
+                    "label": "Power control object",
+                    "help": "OpenDTU power control state for this inverter",
+                    "command": "getObjects",
+                    "jsonData": "{\"type\": \"state\", \"name\": \"*power_control*limit*\"}",
+                    "width": "400px"
+                },
+                {
+                    "type": "text",
+                    "attr": "name",
+                    "label": "Name",
+                    "help": "Display name for this inverter",
+                    "width": "200px"
+                }
+            ],
             "newLine": true
         },
         "feedInThreshold": {
