@@ -255,14 +255,7 @@ class Zeropv extends utils.Adapter {
      */
     async checkPowerControlAdjustment(currentGridPower) {
         try {
-            // Only act if we're feeding into the grid (negative power)
-            if (currentGridPower >= 0) {
-                this.lastGridPower = currentGridPower;
-                await this.setState('powerControlActive', { val: false, ack: true });
-                return;
-            }
-
-            // Check if this is the first reading or if change is significant enough
+            // Check if this is the first reading
             if (this.lastGridPower === null) {
                 this.lastGridPower = currentGridPower;
                 return;
@@ -272,8 +265,10 @@ class Zeropv extends utils.Adapter {
             
             // Only adjust if change is above threshold
             if (powerChange >= this.config.feedInThreshold) {
-                this.log.info(`Feed-in power changed by ${powerChange}W, adjusting inverter power limit`);
+                this.log.info(`Grid power changed by ${powerChange}W, adjusting inverter power limit`);
                 await this.adjustInverterPowerLimit(currentGridPower);
+            } else {
+                await this.setState('powerControlActive', { val: false, ack: true });
             }
 
             this.lastGridPower = currentGridPower;
@@ -303,10 +298,17 @@ class Zeropv extends utils.Adapter {
             }
 
             // Calculate the adjustment needed
-            // Current feed-in is negative, target feed-in is negative (e.g., -800W)
-            // If we're feeding in more than target, we need to reduce inverter output
-            const feedInDifference = currentGridPower - this.config.targetFeedIn;
-            const newLimit = Math.max(0, currentLimit - feedInDifference);
+            // For positive grid power (consuming): increase PV limit to reduce consumption
+            // For negative grid power (feeding): adjust to reach target feed-in
+            let newLimit;
+            if (currentGridPower >= 0) {
+                // Consuming from grid - increase PV production
+                newLimit = currentLimit + currentGridPower;
+            } else {
+                // Feeding into grid - adjust to reach target feed-in
+                const feedInDifference = currentGridPower - this.config.targetFeedIn;
+                newLimit = Math.max(0, currentLimit + feedInDifference);
+            }
 
             this.log.info(`Adjusting power limit from ${currentLimit}W to ${newLimit}W (grid power: ${currentGridPower}W, target: ${this.config.targetFeedIn}W)`);
 
