@@ -74,8 +74,8 @@ class Zeropv extends utils.Adapter {
         }
 
         if (!this.config.pollingInterval || this.config.pollingInterval < 1000) {
-            this.log.warn('Invalid polling interval, using default of 5000ms');
-            this.config.pollingInterval = 5000;
+            this.log.warn('Invalid polling interval, using default of 10000ms');
+            this.config.pollingInterval = 10000;
         }
 
         if (!this.config.feedInThreshold || this.config.feedInThreshold < 50) {
@@ -328,7 +328,7 @@ class Zeropv extends utils.Adapter {
             const limitChange = Math.abs(newTotalLimit - totalCurrentLimit);
             
             if (limitChange >= this.config.feedInThreshold) {
-                this.log.info(`Total inverter limit would change by ${limitChange}W, adjusting inverter power limits`);
+                this.log.debug(`Total inverter limit would change by ${limitChange}W, adjusting inverter power limits`);
                 await this.adjustInverterPowerLimits(currentGridPower, currentLimits);
             } else {
                 await this.setState('powerControlActive', { val: false, ack: true });
@@ -398,10 +398,11 @@ class Zeropv extends utils.Adapter {
             // Distribute the new total limit equally among all inverters
             const newLimitPerInverter = Math.floor(newTotalLimit / this.config.inverters.length);
             
-            this.log.info(`Adjusting total power limit from ${totalCurrentLimit}W to ${newTotalLimit}W (${newLimitPerInverter}W per inverter) - grid power: ${currentGridPower}W, target: ${this.config.targetFeedIn}W`);
+            this.log.debug(`Adjusting total power limit from ${totalCurrentLimit}W to ${newTotalLimit}W (${newLimitPerInverter}W per inverter) - grid power: ${currentGridPower}W, target: ${this.config.targetFeedIn}W`);
 
             // Set new power limit for each inverter
             const adjustmentPromises = [];
+            const changedInverters = [];
             for (const limit of currentLimits) {
                 const inverter = this.config.inverters[limit.index];
                 const inverterName = inverter.name || `Inverter ${limit.index + 1}`;
@@ -410,22 +411,33 @@ class Zeropv extends utils.Adapter {
                 const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
                 
                 if (clampedLimit !== newLimitPerInverter) {
-                    this.log.warn(`${inverterName} limit clamped from ${newLimitPerInverter}W to ${clampedLimit}W (max: ${inverter.maxPower || 2250}W)`);
+                    this.log.debug(`${inverterName} limit clamped from ${newLimitPerInverter}W to ${clampedLimit}W (max: ${inverter.maxPower || 2250}W)`);
                 }
                 
-                this.log.debug(`Setting ${inverterName} limit from ${limit.value}W to ${clampedLimit}W`);
-                
-                adjustmentPromises.push(
-                    this.setForeignStateAsync(limit.powerControlObject, clampedLimit)
-                        .then(async () => {
-                            this.lastPowerLimits.set(limit.index, clampedLimit);
-                            // Update individual inverter state
-                            await this.setState(`inverter${limit.index}.powerLimit`, { val: clampedLimit, ack: true });
-                        })
-                        .catch(error => {
-                            this.log.error(`Error setting limit for ${inverterName}: ${error.message}`);
-                        })
-                );
+                // Only send command if limit actually changed
+                const lastSentLimit = this.lastPowerLimits.get(limit.index);
+                if (clampedLimit !== lastSentLimit) {
+                    changedInverters.push(`${inverterName}: ${clampedLimit}W`);
+                    
+                    adjustmentPromises.push(
+                        this.setForeignStateAsync(limit.powerControlObject, clampedLimit)
+                            .then(async () => {
+                                this.lastPowerLimits.set(limit.index, clampedLimit);
+                                // Update individual inverter state
+                                await this.setState(`inverter${limit.index}.powerLimit`, { val: clampedLimit, ack: true });
+                            })
+                            .catch(error => {
+                                this.log.error(`Error setting limit for ${inverterName}: ${error.message}`);
+                            })
+                    );
+                } else {
+                    this.log.debug(`${inverterName} limit unchanged at ${clampedLimit}W, skipping update`);
+                }
+            }
+            
+            // Log changes once
+            if (changedInverters.length > 0) {
+                this.log.info(`Setting inverter limits: ${changedInverters.join(', ')}`);
             }
             
             // Wait for all adjustments to complete

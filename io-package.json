@@ -81,7 +81,7 @@
     },
     "native": {
         "powerSourceObject": "",
-        "pollingInterval": 5000,
+        "pollingInterval": 10000,
         "inverters": [],
         "feedInThreshold": 100,
         "targetFeedIn": -800
