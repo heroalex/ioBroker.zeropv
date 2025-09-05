@@ -25,11 +25,11 @@
             "items": [
                 {
                     "type": "selectSendTo",
-                    "attr": "powerControlObject",
-                    "label": "Power control object",
-                    "help": "OpenDTU power control state for this inverter",
+                    "attr": "inverterObject",
+                    "label": "Inverter base object",
+                    "help": "OpenDTU inverter base object (e.g. opendtu.0.138292177702)",
                     "command": "getObjects",
-                    "jsonData": "{\"type\": \"state\", \"name\": \"*power_control*limit*\"}",
+                    "jsonData": "{\"type\": \"device\", \"name\": \"*opendtu*\"}",
                     "width": "400px"
                 },
                 {

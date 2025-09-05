@@ -28,8 +28,6 @@ class Zeropv extends utils.Adapter {
         this.on('unload', this.onUnload.bind(this));
         
         this.pollingTimer = null;
-        this.lastGridPower = null;
-        this.lastPowerLimits = new Map();
     }
 
     /**
@@ -55,8 +53,8 @@ class Zeropv extends utils.Adapter {
         // Validate each inverter configuration
         for (let i = 0; i < this.config.inverters.length; i++) {
             const inverter = this.config.inverters[i];
-            if (!inverter.powerControlObject) {
-                this.log.error(`Inverter ${i + 1} has no power control object configured!`);
+            if (!inverter.inverterObject) {
+                this.log.error(`Inverter ${i + 1} has no inverter base object configured!`);
                 return;
             }
             
@@ -91,7 +89,7 @@ class Zeropv extends utils.Adapter {
         this.log.info(`Power source: ${this.config.powerSourceObject}`);
         this.log.info(`Number of inverters: ${this.config.inverters.length}`);
         this.config.inverters.forEach((inv, index) => {
-            this.log.info(`Inverter ${index + 1} (${inv.name || 'Unnamed'}): ${inv.powerControlObject}`);
+            this.log.info(`Inverter ${index + 1} (${inv.name || 'Unnamed'}): ${inv.inverterObject}`);
         });
         this.log.info(`Polling interval: ${this.config.pollingInterval}ms`);
         this.log.info(`Inverter limit change threshold: ${this.config.feedInThreshold}W`);
@@ -293,48 +291,80 @@ class Zeropv extends utils.Adapter {
     }
 
     /**
+     * Calculate new clamped power limits for all inverters
+     * @param {number} currentGridPower Current grid power (negative = feeding in)
+     * @param {Array<{index: number, inverterObject: string, controlObject: string, value: number}>} currentLimits Current inverter limits
+     * @returns {{newLimits: Array<{index: number, controlObject: string, oldValue: number, newValue: number}>, totalOldLimit: number, totalNewLimit: number}}
+     */
+    calculateNewClampedLimits(currentGridPower, currentLimits) {
+        // Calculate total current limit
+        const totalOldLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
+
+        // Calculate the adjustment needed
+        let newTotalLimit;
+        if (currentGridPower >= 0) {
+            // Consuming from grid - increase PV production
+            newTotalLimit = totalOldLimit + currentGridPower;
+        } else {
+            // Feeding into grid - adjust to reach target feed-in
+            const feedInDifference = currentGridPower - this.config.targetFeedIn;
+            newTotalLimit = Math.max(0, totalOldLimit + feedInDifference);
+        }
+
+        // Distribute the new total limit equally among all inverters
+        const newLimitPerInverter = Math.floor(newTotalLimit / this.config.inverters.length);
+        
+        // Calculate clamped limits for each inverter
+        const newLimits = [];
+        let totalNewLimit = 0;
+        
+        for (const limit of currentLimits) {
+            const inverter = this.config.inverters[limit.index];
+            // Enforce maximum power limit per inverter
+            const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
+            
+            newLimits.push({
+                index: limit.index,
+                controlObject: limit.controlObject,
+                oldValue: limit.value,
+                newValue: clampedLimit
+            });
+            
+            totalNewLimit += clampedLimit;
+        }
+
+        return {
+            newLimits,
+            totalOldLimit,
+            totalNewLimit
+        };
+    }
+
+    /**
      * Check if power control adjustment is needed based on calculated inverter limit change
      * @param {number} currentGridPower Current grid power (negative = feeding in)
      */
     async checkPowerControlAdjustment(currentGridPower) {
         try {
-            // Check if this is the first reading
-            if (this.lastGridPower === null) {
-                this.lastGridPower = currentGridPower;
-                return;
-            }
-
             // Get current limits from all inverters
             const currentLimits = await this.getAllInverterLimits();
             if (currentLimits.length === 0) {
                 this.log.warn('Could not read current power limits from any inverters');
-                this.lastGridPower = currentGridPower;
                 return;
             }
 
-            // Calculate total current limit
-            const totalCurrentLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
-
-            // Calculate what the new total limit would be
-            let newTotalLimit;
-            if (currentGridPower >= 0) {
-                newTotalLimit = totalCurrentLimit + currentGridPower;
-            } else {
-                const feedInDifference = currentGridPower - this.config.targetFeedIn;
-                newTotalLimit = Math.max(0, totalCurrentLimit + feedInDifference);
-            }
-
-            // Only adjust if total limit change is above threshold
-            const limitChange = Math.abs(newTotalLimit - totalCurrentLimit);
+            // Calculate new clamped limits and actual total change
+            const { newLimits, totalOldLimit, totalNewLimit } = this.calculateNewClampedLimits(currentGridPower, currentLimits);
             
-            if (limitChange >= this.config.feedInThreshold) {
-                this.log.debug(`Total inverter limit would change by ${limitChange}W, adjusting inverter power limits`);
-                await this.adjustInverterPowerLimits(currentGridPower, currentLimits);
+            // Only adjust if actual total limit change (after clamping) is above threshold
+            const actualLimitChange = Math.abs(totalNewLimit - totalOldLimit);
+            
+            if (actualLimitChange >= this.config.feedInThreshold) {
+                this.log.debug(`Total inverter limit would change by ${actualLimitChange}W (after clamping), adjusting inverter power limits`);
+                await this.applyInverterPowerLimits(newLimits, totalNewLimit);
             } else {
                 await this.setState('powerControlActive', { val: false, ack: true });
             }
-
-            this.lastGridPower = currentGridPower;
         } catch (error) {
             this.log.error(`Error in power control adjustment: ${error.message}`);
         }
@@ -342,7 +372,7 @@ class Zeropv extends utils.Adapter {
 
     /**
      * Get current power limits from all configured inverters
-     * @returns {Promise<Array<{index: number, powerControlObject: string, value: number}>>}
+     * @returns {Promise<Array<{index: number, inverterObject: string, controlObject: string, value: number}>>}
      */
     async getAllInverterLimits() {
         const limits = [];
@@ -350,21 +380,23 @@ class Zeropv extends utils.Adapter {
         for (let i = 0; i < this.config.inverters.length; i++) {
             const inverter = this.config.inverters[i];
             try {
-                const limitState = await this.getForeignStateAsync(inverter.powerControlObject);
+                const currentLimitObject = `${inverter.inverterObject}.power_control.current_limit_absolute`;
+                const limitState = await this.getForeignStateAsync(currentLimitObject);
                 
                 if (limitState && limitState.val !== null && limitState.val !== undefined) {
                     const limitValue = parseFloat(limitState.val);
                     if (!isNaN(limitValue)) {
                         limits.push({
                             index: i,
-                            powerControlObject: inverter.powerControlObject,
+                            inverterObject: inverter.inverterObject,
+                            controlObject: `${inverter.inverterObject}.power_control.limit_nonpersistent_absolute`,
                             value: limitValue
                         });
                     } else {
                         this.log.warn(`Invalid power limit value from inverter ${i + 1}: ${limitState.val}`);
                     }
                 } else {
-                    this.log.warn(`Could not read power limit from inverter ${i + 1}: ${inverter.powerControlObject}`);
+                    this.log.warn(`Could not read power limit from inverter ${i + 1}: ${currentLimitObject}`);
                 }
             } catch (error) {
                 this.log.error(`Error reading limit from inverter ${i + 1}: ${error.message}`);
@@ -375,63 +407,38 @@ class Zeropv extends utils.Adapter {
     }
 
     /**
-     * Adjust inverter power limits to achieve target feed-in, distributing power equally
-     * @param {number} currentGridPower Current grid power (negative = feeding in)
-     * @param {Array<{index: number, powerControlObject: string, value: number}>} currentLimits Current inverter limits
+     * Apply the calculated power limits to all inverters
+     * @param {Array<{index: number, controlObject: string, oldValue: number, newValue: number}>} newLimits New limits to apply
+     * @param {number} totalNewLimit Total new power limit across all inverters
      */
-    async adjustInverterPowerLimits(currentGridPower, currentLimits) {
+    async applyInverterPowerLimits(newLimits, totalNewLimit) {
         try {
-            // Calculate total current limit
-            const totalCurrentLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
-
-            // Calculate the adjustment needed
-            let newTotalLimit;
-            if (currentGridPower >= 0) {
-                // Consuming from grid - increase PV production
-                newTotalLimit = totalCurrentLimit + currentGridPower;
-            } else {
-                // Feeding into grid - adjust to reach target feed-in
-                const feedInDifference = currentGridPower - this.config.targetFeedIn;
-                newTotalLimit = Math.max(0, totalCurrentLimit + feedInDifference);
-            }
-
-            // Distribute the new total limit equally among all inverters
-            const newLimitPerInverter = Math.floor(newTotalLimit / this.config.inverters.length);
-            
-            this.log.debug(`Adjusting total power limit from ${totalCurrentLimit}W to ${newTotalLimit}W (${newLimitPerInverter}W per inverter) - grid power: ${currentGridPower}W, target: ${this.config.targetFeedIn}W`);
+            this.log.debug(`Applying new power limits, total: ${totalNewLimit}W`);
 
             // Set new power limit for each inverter
             const adjustmentPromises = [];
             const changedInverters = [];
-            for (const limit of currentLimits) {
+            
+            for (const limit of newLimits) {
                 const inverter = this.config.inverters[limit.index];
                 const inverterName = inverter.name || `Inverter ${limit.index + 1}`;
                 
-                // Enforce maximum power limit per inverter
-                const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
-                
-                if (clampedLimit !== newLimitPerInverter) {
-                    this.log.debug(`${inverterName} limit clamped from ${newLimitPerInverter}W to ${clampedLimit}W (max: ${inverter.maxPower || 2250}W)`);
-                }
-                
                 // Only send command if limit actually changed
-                const lastSentLimit = this.lastPowerLimits.get(limit.index);
-                if (clampedLimit !== lastSentLimit) {
-                    changedInverters.push(`${inverterName}: ${clampedLimit}W`);
+                if (limit.newValue !== limit.oldValue) {
+                    changedInverters.push(`${inverterName}: ${limit.oldValue}W → ${limit.newValue}W`);
                     
                     adjustmentPromises.push(
-                        this.setForeignStateAsync(limit.powerControlObject, clampedLimit)
+                        this.setForeignStateAsync(limit.controlObject, limit.newValue)
                             .then(async () => {
-                                this.lastPowerLimits.set(limit.index, clampedLimit);
                                 // Update individual inverter state
-                                await this.setState(`inverter${limit.index}.powerLimit`, { val: clampedLimit, ack: true });
+                                await this.setState(`inverter${limit.index}.powerLimit`, { val: limit.newValue, ack: true });
                             })
                             .catch(error => {
                                 this.log.error(`Error setting limit for ${inverterName}: ${error.message}`);
                             })
                     );
                 } else {
-                    this.log.debug(`${inverterName} limit unchanged at ${clampedLimit}W, skipping update`);
+                    this.log.debug(`${inverterName} limit unchanged at ${limit.newValue}W, skipping update`);
                 }
             }
             
@@ -444,11 +451,11 @@ class Zeropv extends utils.Adapter {
             await Promise.all(adjustmentPromises);
             
             // Update our states
-            await this.setState('currentPowerLimit', { val: newTotalLimit, ack: true });
+            await this.setState('currentPowerLimit', { val: totalNewLimit, ack: true });
             await this.setState('powerControlActive', { val: true, ack: true });
             
         } catch (error) {
-            this.log.error(`Error adjusting inverter power limits: ${error.message}`);
+            this.log.error(`Error applying inverter power limits: ${error.message}`);
         }
     }
 
