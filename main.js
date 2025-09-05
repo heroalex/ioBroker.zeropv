@@ -216,15 +216,18 @@ class Zeropv extends utils.Adapter {
 
                 let matches = false;
 
-                // Handle power source objects (states with role value.power)
+                // Handle power source objects (states with power-related roles)
                 if (filter.type === 'state' && filter.role === 'value.power') {
-                    if (objData.type === 'state' && objData.common.role === 'value.power') {
+                    const role = objData.common.role;
+                    const isPowerRole = role === 'value.power' || role === 'value.power.active' || role === 'value.power.apparent';
+                    
+                    if (objData.type === 'state' && isPowerRole) {
                         // Only include relevant power sources for grid monitoring
                         matches = this.isRelevantPowerSource(id, objData);
                         if (matches) {
-                            this.log.debug(`Including power source: ${id}`);
+                            this.log.debug(`Including power source: ${id} (role: ${role})`);
                         } else {
-                            this.log.debug(`Excluding power source: ${id}`);
+                            this.log.debug(`Excluding power source: ${id} (role: ${role})`);
                         }
                     }
                 }
