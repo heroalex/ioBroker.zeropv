@@ -24,7 +24,7 @@ class Zeropv extends utils.Adapter {
         this.on('ready', this.onReady.bind(this));
         this.on('stateChange', this.onStateChange.bind(this));
         // this.on('objectChange', this.onObjectChange.bind(this));
-        // this.on('message', this.onMessage.bind(this));
+        this.on('message', this.onMessage.bind(this));
         this.on('unload', this.onUnload.bind(this));
         
         this.pollingTimer = null;
@@ -171,6 +171,99 @@ class Zeropv extends utils.Adapter {
     //         }
     //     }
     // }
+
+    /**
+     * Handle messages from admin UI for object selection
+     * @param {ioBroker.Message} obj
+     */
+    onMessage(obj) {
+        if (typeof obj === 'object' && obj.message) {
+            if (obj.command === 'getObjects') {
+                this.handleGetObjects(obj);
+            }
+        }
+    }
+
+    /**
+     * Handle getObjects command for selectSendTo components
+     * @param {ioBroker.Message} obj
+     */
+    async handleGetObjects(obj) {
+        try {
+            const criteria = obj.message;
+            let filter = {};
+            
+            if (criteria && typeof criteria === 'string') {
+                filter = JSON.parse(criteria);
+            } else if (criteria && typeof criteria === 'object') {
+                filter = criteria;
+            }
+
+            // Get all objects based on filter type
+            let allObjects;
+            if (filter.type === 'device') {
+                allObjects = await this.getForeignObjectsAsync('*', 'device');
+            } else {
+                allObjects = await this.getForeignObjectsAsync('*', 'state');
+            }
+            
+            const result = [];
+
+            for (const [id, objData] of Object.entries(allObjects)) {
+                if (!objData || !objData.common) continue;
+
+                let matches = true;
+
+                // Filter by type
+                if (filter.type && objData.type !== filter.type) {
+                    matches = false;
+                }
+
+                // Filter by role
+                if (filter.role && objData.common.role !== filter.role) {
+                    matches = false;
+                }
+
+                // Special handling for OpenDTU devices
+                if (filter.name === '*opendtu*') {
+                    matches = false;
+                    // Check if this is an OpenDTU inverter base object
+                    if (id.includes('opendtu') && objData.type === 'device') {
+                        // Look for inverter device objects
+                        if (id.match(/opendtu\.\d+\.\d+$/)) {
+                            matches = true;
+                        }
+                    }
+                }
+
+                if (matches) {
+                    result.push({
+                        _id: id,
+                        common: {
+                            name: objData.common.name || id,
+                            role: objData.common.role
+                        }
+                    });
+                }
+            }
+
+            // Sort results by name
+            result.sort((a, b) => {
+                const nameA = a.common.name.toString().toLowerCase();
+                const nameB = b.common.name.toString().toLowerCase();
+                return nameA.localeCompare(nameB);
+            });
+
+            if (obj.callback) {
+                this.sendTo(obj.from, obj.command, result, obj.callback);
+            }
+        } catch (error) {
+            this.log.error(`Error in handleGetObjects: ${error.message}`);
+            if (obj.callback) {
+                this.sendTo(obj.from, obj.command, { error: error.message }, obj.callback);
+            }
+        }
+    }
 
     /**
      * Create adapter states for power monitoring
