@@ -201,8 +201,12 @@ class Zeropv extends utils.Adapter {
 
             this.log.info(`getObjects called with filter: ${JSON.stringify(filter)}`);
 
-            // Get all objects
-            const allObjects = await this.getForeignObjectsAsync('*');
+            // Get all objects - need to get both states and devices
+            const allObjects = await this.getForeignObjectsAsync('*', 'state');
+            const allDevices = await this.getForeignObjectsAsync('*', 'device');
+            
+            // Merge both results
+            Object.assign(allObjects, allDevices);
             const result = [];
 
             for (const [id, objData] of Object.entries(allObjects)) {
@@ -223,7 +227,7 @@ class Zeropv extends utils.Adapter {
                         this.log.debug(`Checking OpenDTU object: ${id}, type: ${objData.type}`);
                         if (objData.type === 'device') {
                             // Look for inverter device objects (pattern: opendtu.0.123456789)
-                            if (id.match(/opendtu\.\d+\.\d+$/)) {
+                            if (id.match(/^opendtu\.\d+\.\d+$/)) {
                                 this.log.debug(`Found OpenDTU device match: ${id}`);
                                 matches = true;
                             }
