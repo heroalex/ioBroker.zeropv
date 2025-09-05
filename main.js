@@ -219,16 +219,27 @@ class Zeropv extends utils.Adapter {
                 
                 // Handle OpenDTU device objects
                 else if (filter.type === 'device' && filter.name === '*opendtu*') {
-                    if (objData.type === 'device' && id.toLowerCase().includes('opendtu')) {
-                        // Look for inverter device objects (pattern: opendtu.0.123456789)
-                        if (id.match(/opendtu\.\d+\.\d+$/)) {
-                            matches = true;
+                    if (id.toLowerCase().includes('opendtu')) {
+                        this.log.debug(`Checking OpenDTU object: ${id}, type: ${objData.type}`);
+                        if (objData.type === 'device') {
+                            // Look for inverter device objects (pattern: opendtu.0.123456789)
+                            if (id.match(/opendtu\.\d+\.\d+$/)) {
+                                this.log.debug(`Found OpenDTU device match: ${id}`);
+                                matches = true;
+                            }
                         }
                     }
                 }
 
                 if (matches) {
-                    const displayName = objData.common.name || id;
+                    // Handle display name properly
+                    let displayName = objData.common.name;
+                    if (typeof displayName === 'object') {
+                        displayName = displayName.en || displayName.de || displayName.toString();
+                    }
+                    if (!displayName || displayName === '[object Object]') {
+                        displayName = id;
+                    }
                     
                     result.push({
                         _id: id,
