@@ -28,6 +28,7 @@ class Zeropv extends utils.Adapter {
         this.on('unload', this.onUnload.bind(this));
         
         this.pollingTimer = null;
+        this.lastDecreaseTime = null; // timestamp of last power decrease
     }
 
     /**
@@ -360,8 +361,28 @@ class Zeropv extends utils.Adapter {
             const actualLimitChange = Math.abs(totalNewLimit - totalOldLimit);
             
             if (actualLimitChange >= this.config.feedInThreshold) {
-                this.log.debug(`Total inverter limit would change by ${actualLimitChange}W (after clamping), adjusting inverter power limits`);
-                await this.applyInverterPowerLimits(newLimits, totalNewLimit);
+                const isDecrease = totalNewLimit < totalOldLimit;
+                const now = Date.now();
+                
+                // For increases, apply immediately
+                if (!isDecrease) {
+                    this.log.debug(`Total inverter limit would increase by ${actualLimitChange}W (after clamping), adjusting inverter power limits`);
+                    await this.applyInverterPowerLimits(newLimits, totalNewLimit);
+                    this.lastDecreaseTime = null; // reset decrease timer on increase
+                } else {
+                    // For decreases, check if enough time has passed since last decrease
+                    const decreaseDelay = this.config.pollingInterval * 3; // 3x polling interval delay
+                    
+                    if (!this.lastDecreaseTime || (now - this.lastDecreaseTime) >= decreaseDelay) {
+                        this.log.debug(`Total inverter limit would decrease by ${actualLimitChange}W (after clamping), adjusting inverter power limits`);
+                        await this.applyInverterPowerLimits(newLimits, totalNewLimit);
+                        this.lastDecreaseTime = now;
+                    } else {
+                        const remainingDelay = Math.ceil((decreaseDelay - (now - this.lastDecreaseTime)) / 1000);
+                        this.log.debug(`Decrease needed but delaying for ${remainingDelay}s to avoid premature reduction`);
+                        await this.setState('powerControlActive', { val: false, ack: true });
+                    }
+                }
             } else {
                 await this.setState('powerControlActive', { val: false, ack: true });
             }
