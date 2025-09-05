@@ -89,9 +89,11 @@ class Zeropv extends utils.Adapter {
 
         this.log.info(`Power source: ${this.config.powerSourceObject}`);
         this.log.info(`Number of inverters: ${this.config.inverters.length}`);
-        this.config.inverters.forEach((inv, index) => {
-            this.log.info(`Inverter ${index + 1} (${inv.name || 'Unnamed'}): ${inv.inverterObject}`);
-        });
+        for (let i = 0; i < this.config.inverters.length; i++) {
+            const inv = this.config.inverters[i];
+            const displayName = await this.getInverterDisplayName(inv.inverterObject, i);
+            this.log.info(`Inverter ${i + 1} (${displayName}): ${inv.inverterObject}`);
+        }
         this.log.info(`Polling interval: ${this.config.pollingInterval}ms`);
         this.log.info(`Inverter limit change threshold: ${this.config.feedInThreshold}W`);
         this.log.info(`Target feed-in: ${this.config.targetFeedIn}W`);
@@ -280,6 +282,24 @@ class Zeropv extends utils.Adapter {
     }
 
     /**
+     * Get the display name for an inverter from OpenDTU
+     * @param {string} inverterObject - The base inverter object ID
+     * @param {number} index - The inverter index for fallback naming
+     * @returns {Promise<string>} The display name
+     */
+    async getInverterDisplayName(inverterObject, index) {
+        try {
+            const nameState = await this.getForeignStateAsync(`${inverterObject}.name`);
+            if (nameState && nameState.val) {
+                return nameState.val.toString();
+            }
+        } catch (error) {
+            this.log.debug(`Could not get name for inverter ${inverterObject}: ${error.message}`);
+        }
+        return `Inverter ${index + 1}`;
+    }
+
+    /**
      * Create adapter states for power monitoring
      */
     async createStatesAsync() {
@@ -338,7 +358,7 @@ class Zeropv extends utils.Adapter {
         // Create states for each inverter
         for (let i = 0; i < this.config.inverters.length; i++) {
             const inverter = this.config.inverters[i];
-            const inverterName = inverter.name || `Inverter ${i + 1}`;
+            const inverterName = await this.getInverterDisplayName(inverter.inverterObject, i);
             
             await this.setObjectNotExistsAsync(`inverter${i}.powerLimit`, {
                 type: 'state',
@@ -547,9 +567,16 @@ class Zeropv extends utils.Adapter {
             const adjustmentPromises = [];
             const changedInverters = [];
             
+            const namePromises = [];
             for (const limit of newLimits) {
                 const inverter = this.config.inverters[limit.index];
-                const inverterName = inverter.name || `Inverter ${limit.index + 1}`;
+                namePromises.push(this.getInverterDisplayName(inverter.inverterObject, limit.index));
+            }
+            const inverterNames = await Promise.all(namePromises);
+            
+            for (let i = 0; i < newLimits.length; i++) {
+                const limit = newLimits[i];
+                const inverterName = inverterNames[i];
                 
                 // Only send command if limit actually changed
                 if (limit.newValue !== limit.oldValue) {
