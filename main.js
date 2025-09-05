@@ -249,7 +249,9 @@ class Zeropv extends utils.Adapter {
                         _id: id,
                         common: {
                             name: displayName
-                        }
+                        },
+                        value: id,
+                        label: displayName
                     });
                     
                     this.log.debug(`Added object: ${id} (${displayName})`);
@@ -266,6 +268,7 @@ class Zeropv extends utils.Adapter {
             });
 
             if (obj.callback) {
+                this.log.info(`Sending result with ${result.length} items: ${JSON.stringify(result.slice(0, 2))}...`);
                 this.sendTo(obj.from, obj.command, result, obj.callback);
             }
         } catch (error) {
