@@ -199,37 +199,28 @@ class Zeropv extends utils.Adapter {
                 filter = criteria;
             }
 
-            // Get all objects based on filter type
-            let allObjects;
-            if (filter.type === 'device') {
-                allObjects = await this.getForeignObjectsAsync('*', 'device');
-            } else {
-                allObjects = await this.getForeignObjectsAsync('*', 'state');
-            }
-            
+            this.log.info(`getObjects called with filter: ${JSON.stringify(filter)}`);
+
+            // Get all objects
+            const allObjects = await this.getForeignObjectsAsync('*');
             const result = [];
 
             for (const [id, objData] of Object.entries(allObjects)) {
                 if (!objData || !objData.common) continue;
 
-                let matches = true;
+                let matches = false;
 
-                // Filter by type
-                if (filter.type && objData.type !== filter.type) {
-                    matches = false;
+                // Handle power source objects (states with role value.power)
+                if (filter.type === 'state' && filter.role === 'value.power') {
+                    if (objData.type === 'state' && objData.common.role === 'value.power') {
+                        matches = true;
+                    }
                 }
-
-                // Filter by role
-                if (filter.role && objData.common.role !== filter.role) {
-                    matches = false;
-                }
-
-                // Special handling for OpenDTU devices
-                if (filter.name === '*opendtu*') {
-                    matches = false;
-                    // Check if this is an OpenDTU inverter base object
-                    if (id.includes('opendtu') && objData.type === 'device') {
-                        // Look for inverter device objects
+                
+                // Handle OpenDTU device objects
+                else if (filter.type === 'device' && filter.name === '*opendtu*') {
+                    if (objData.type === 'device' && id.toLowerCase().includes('opendtu')) {
+                        // Look for inverter device objects (pattern: opendtu.0.123456789)
                         if (id.match(/opendtu\.\d+\.\d+$/)) {
                             matches = true;
                         }
@@ -237,20 +228,25 @@ class Zeropv extends utils.Adapter {
                 }
 
                 if (matches) {
+                    const displayName = objData.common.name || id;
+                    
                     result.push({
                         _id: id,
                         common: {
-                            name: objData.common.name || id,
-                            role: objData.common.role
+                            name: displayName
                         }
                     });
+                    
+                    this.log.debug(`Added object: ${id} (${displayName})`);
                 }
             }
 
-            // Sort results by name
+            this.log.info(`Found ${result.length} matching objects for filter`);
+            
+            // Sort results by display name
             result.sort((a, b) => {
-                const nameA = a.common.name.toString().toLowerCase();
-                const nameB = b.common.name.toString().toLowerCase();
+                const nameA = (a.common.name || '').toString().toLowerCase();
+                const nameB = (b.common.name || '').toString().toLowerCase();
                 return nameA.localeCompare(nameB);
             });
 
