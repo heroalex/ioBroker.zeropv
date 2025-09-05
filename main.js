@@ -219,7 +219,13 @@ class Zeropv extends utils.Adapter {
                 // Handle power source objects (states with role value.power)
                 if (filter.type === 'state' && filter.role === 'value.power') {
                     if (objData.type === 'state' && objData.common.role === 'value.power') {
-                        matches = true;
+                        // Only include relevant power sources for grid monitoring
+                        matches = this.isRelevantPowerSource(id, objData);
+                        if (matches) {
+                            this.log.debug(`Including power source: ${id}`);
+                        } else {
+                            this.log.debug(`Excluding power source: ${id}`);
+                        }
                     }
                 }
                 
@@ -297,6 +303,64 @@ class Zeropv extends utils.Adapter {
             this.log.debug(`Could not get name for inverter ${inverterObject}: ${error.message}`);
         }
         return `Inverter ${index + 1}`;
+    }
+
+    /**
+     * Check if a power state is relevant for grid power monitoring
+     * @param {string} id - The object ID
+     * @param {object} objData - The object data
+     * @returns {boolean} Whether this is a relevant power source
+     */
+    isRelevantPowerSource(id, objData) {
+        // Exclude OpenDTU inverter power states (we don't want to monitor our own inverters)
+        if (id.toLowerCase().includes('opendtu')) {
+            return false;
+        }
+
+        // Exclude individual phase/input power measurements - we want total power
+        const excludePatterns = [
+            /\.phase_\d+\./,          // AC phase power (opendtu.0.xxxxx.ac.phase_1.power)
+            /\.input_\d+\./,          // DC input power (opendtu.0.xxxxx.dc.input_1.power)
+            /\.ApparentPower[ABC]$/,  // Individual phase apparent power (Shelly)
+            /\.ReactivePower[ABC]$/,  // Individual phase reactive power (Shelly)
+            /\.ActivePower[ABC]$/,    // Individual phase active power (Shelly)
+            /\.power_dc$/,            // DC power from inverters
+        ];
+
+        for (const pattern of excludePatterns) {
+            if (pattern.test(id)) {
+                return false;
+            }
+        }
+
+        // Include total/main power measurements
+        const includePatterns = [
+            /TotalActivePower$/,      // Shelly total active power
+            /TotalApparentPower$/,    // Shelly total apparent power  
+            /\.total\.power$/,        // OpenDTU total power (if we ever want it)
+            /gridPower$/,             // Our own grid power state
+            /totalPower$/,            // Generic total power
+            /activePower$/,           // Main active power (but not phase-specific)
+        ];
+
+        for (const pattern of includePatterns) {
+            if (pattern.test(id)) {
+                return true;
+            }
+        }
+
+        // For other power states, be more selective
+        const name = objData.common.name;
+        if (typeof name === 'string') {
+            const lowerName = name.toLowerCase();
+            // Include if it contains "total" or "grid" or "main" but not "phase" or "input"
+            if ((lowerName.includes('total') || lowerName.includes('grid') || lowerName.includes('main')) 
+                && !lowerName.includes('phase') && !lowerName.includes('input')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
