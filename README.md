@@ -149,6 +149,14 @@ The adapter includes comprehensive unit tests (`test/unit.js`) covering:
 - OpenDTU adapter for inverter control
 - Node.js >= 18
 
+## Installation
+
+### Installing & Updating Adapter
+
+1. Connect to Raspberry Pi: `ssh raspi`
+2. Open ioBroker container shell: `podman exec -it iobroker /bin/bash`
+3. Load adapter: `iobroker url https://github.com/heroalex/iobroker.zeropv zeropv`
+
 ## States
 
 The adapter creates the following states:
