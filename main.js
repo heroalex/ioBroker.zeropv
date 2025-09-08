@@ -82,9 +82,9 @@ class Zeropv extends utils.Adapter {
             this.config.feedInThreshold = 100;
         }
 
-        if (this.config.targetFeedIn === undefined || this.config.targetFeedIn === null) {
-            this.log.warn('Invalid target feed-in, using default of -800W');
-            this.config.targetFeedIn = -800;
+        if (this.config.targetFeedIn === undefined || this.config.targetFeedIn === null || this.config.targetFeedIn < 0) {
+            this.log.warn('Invalid maximum grid export, using default of 800W');
+            this.config.targetFeedIn = 800;
         }
 
         this.log.info(`Power source: ${this.config.powerSourceObject}`);
@@ -96,7 +96,7 @@ class Zeropv extends utils.Adapter {
         }
         this.log.info(`Polling interval: ${this.config.pollingInterval}ms`);
         this.log.info(`Inverter limit change threshold: ${this.config.feedInThreshold}W`);
-        this.log.info(`Target feed-in: ${this.config.targetFeedIn}W`);
+        this.log.info(`Maximum grid export: ${this.config.targetFeedIn}W`);
 
         // Create adapter states
         await this.createStatesAsync();
@@ -502,7 +502,8 @@ class Zeropv extends utils.Adapter {
             newTotalLimit = totalOldLimit + currentGridPower;
         } else {
             // Feeding into grid - adjust to reach target feed-in
-            const feedInDifference = currentGridPower - this.config.targetFeedIn;
+            const targetFeedInNegative = -this.config.targetFeedIn; // Convert positive config to negative value for calculations
+            const feedInDifference = currentGridPower - targetFeedInNegative;
             newTotalLimit = Math.max(0, totalOldLimit + feedInDifference);
         }
 

@@ -85,7 +85,7 @@
         "pollingInterval": 10000,
         "inverters": [],
         "feedInThreshold": 100,
-        "targetFeedIn": -800
+        "targetFeedIn": 800
     },
     "objects": [],
     "instanceObjects": [

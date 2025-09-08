@@ -56,9 +56,12 @@
         },
         "targetFeedIn": {
             "type": "number",
-            "label": "Target feed-in power (W)",
-            "help": "Target feed-in power (negative value for export to grid)",
-            "default": -800,
+            "label": "Maximum grid export (W)",
+            "help": "Maximum power to export to the grid (positive value, e.g. 800 means max 800W export)",
+            "min": 0,
+            "max": 5000,
+            "step": 1,
+            "default": 800,
             "newLine": true
         }
     }
