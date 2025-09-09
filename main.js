@@ -10,6 +10,8 @@ const utils = require('@iobroker/adapter-core');
 
 // Load your modules here, e.g.:
 // const fs = require("fs");
+const PowerCalculator = require('./lib/power-calculator');
+const InverterManager = require('./lib/inverter-manager');
 
 class Zeropv extends utils.Adapter {
 
@@ -492,48 +494,7 @@ class Zeropv extends utils.Adapter {
      * @returns {{newLimits: Array<{index: number, controlObject: string, oldValue: number, newValue: number}>, totalOldLimit: number, totalNewLimit: number}}
      */
     calculateNewClampedLimits(currentGridPower, currentLimits) {
-        // Calculate total current limit
-        const totalOldLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
-
-        // Calculate the adjustment needed
-        let newTotalLimit;
-        if (currentGridPower >= 0) {
-            // Consuming from grid - increase PV production
-            newTotalLimit = totalOldLimit + currentGridPower;
-        } else {
-            // Feeding into grid - adjust to reach target feed-in
-            const targetFeedInNegative = -this.config.targetFeedIn; // Convert positive config to negative value for calculations
-            const feedInDifference = currentGridPower - targetFeedInNegative;
-            newTotalLimit = Math.max(0, totalOldLimit + feedInDifference);
-        }
-
-        // Distribute the new total limit equally among all inverters
-        const newLimitPerInverter = Math.floor(newTotalLimit / this.config.inverters.length);
-        
-        // Calculate clamped limits for each inverter
-        const newLimits = [];
-        let totalNewLimit = 0;
-        
-        for (const limit of currentLimits) {
-            const inverter = this.config.inverters[limit.index];
-            // Enforce maximum power limit per inverter
-            const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
-            
-            newLimits.push({
-                index: limit.index,
-                controlObject: limit.controlObject,
-                oldValue: limit.value,
-                newValue: clampedLimit
-            });
-            
-            totalNewLimit += clampedLimit;
-        }
-
-        return {
-            newLimits,
-            totalOldLimit,
-            totalNewLimit
-        };
+        return PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, this.config);
     }
 
     /**
@@ -591,35 +552,11 @@ class Zeropv extends utils.Adapter {
      * @returns {Promise<Array<{index: number, inverterObject: string, controlObject: string, value: number}>>}
      */
     async getAllInverterLimits() {
-        const limits = [];
-        
-        for (let i = 0; i < this.config.inverters.length; i++) {
-            const inverter = this.config.inverters[i];
-            try {
-                const currentLimitObject = `${inverter.inverterObject}.power_control.current_limit_absolute`;
-                const limitState = await this.getForeignStateAsync(currentLimitObject);
-                
-                if (limitState && limitState.val !== null && limitState.val !== undefined) {
-                    const limitValue = parseFloat(limitState.val);
-                    if (!isNaN(limitValue)) {
-                        limits.push({
-                            index: i,
-                            inverterObject: inverter.inverterObject,
-                            controlObject: `${inverter.inverterObject}.power_control.limit_nonpersistent_absolute`,
-                            value: limitValue
-                        });
-                    } else {
-                        this.log.warn(`Invalid power limit value from inverter ${i + 1}: ${limitState.val}`);
-                    }
-                } else {
-                    this.log.warn(`Could not read power limit from inverter ${i + 1}: ${currentLimitObject}`);
-                }
-            } catch (error) {
-                this.log.error(`Error reading limit from inverter ${i + 1}: ${error.message}`);
-            }
-        }
-        
-        return limits;
+        return await InverterManager.getAllInverterLimits(
+            this.config, 
+            this.getForeignStateAsync.bind(this), 
+            this.log
+        );
     }
 
     /**

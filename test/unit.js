@@ -754,54 +754,25 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
 });
 
 describe('ZeroPV Adapter - getAllInverterLimits', function() {
-    let adapter;
+    const InverterManager = require('../lib/inverter-manager');
+    let config;
+    let getForeignStateAsync;
+    let logger;
     
     beforeEach(function() {
-        adapter = {
-            config: {
-                inverters: [
-                    { powerControlObject: 'test.inverter1.control', name: 'Inverter 1' },
-                    { powerControlObject: 'test.inverter2.control', name: 'Inverter 2' }
-                ]
-            },
-            getForeignStateAsync: sinon.stub(),
-            log: {
-                info: sinon.stub(),
-                debug: sinon.stub(),
-                warn: sinon.stub(),
-                error: sinon.stub()
-            }
+        config = {
+            inverters: [
+                { inverterObject: 'test.inverter1', name: 'Inverter 1' },
+                { inverterObject: 'test.inverter2', name: 'Inverter 2' }
+            ]
         };
         
-        // Add the getAllInverterLimits method from main.js
-        adapter.getAllInverterLimits = async function() {
-            const limits = [];
-            
-            for (let i = 0; i < this.config.inverters.length; i++) {
-                const inverter = this.config.inverters[i];
-                try {
-                    const limitState = await this.getForeignStateAsync(inverter.powerControlObject);
-                    
-                    if (limitState && limitState.val !== null && limitState.val !== undefined) {
-                        const limitValue = parseFloat(limitState.val);
-                        if (!isNaN(limitValue)) {
-                            limits.push({
-                                index: i,
-                                powerControlObject: inverter.powerControlObject,
-                                value: limitValue
-                            });
-                        } else {
-                            this.log.warn(`Invalid power limit value from inverter ${i + 1}: ${limitState.val}`);
-                        }
-                    } else {
-                        this.log.warn(`Could not read power limit from inverter ${i + 1}: ${inverter.powerControlObject}`);
-                    }
-                } catch (error) {
-                    this.log.error(`Error reading limit from inverter ${i + 1}: ${error.message}`);
-                }
-            }
-            
-            return limits;
+        getForeignStateAsync = sinon.stub();
+        logger = {
+            info: sinon.stub(),
+            debug: sinon.stub(),
+            warn: sinon.stub(),
+            error: sinon.stub()
         };
     });
     
@@ -813,150 +784,136 @@ describe('ZeroPV Adapter - getAllInverterLimits', function() {
         
         it('should return limits from all inverters when all are valid', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves({ val: 1500, ack: true });
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').resolves({ val: 2000, ack: true });
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves({ val: 1500, ack: true });
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').resolves({ val: 2000, ack: true });
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 2);
-            assert.deepEqual(result[0], { index: 0, powerControlObject: 'test.inverter1.control', value: 1500 });
-            assert.deepEqual(result[1], { index: 1, powerControlObject: 'test.inverter2.control', value: 2000 });
+            assert.deepEqual(result[0], { 
+                index: 0, 
+                inverterObject: 'test.inverter1', 
+                controlObject: 'test.inverter1.power_control.limit_nonpersistent_absolute', 
+                value: 1500 
+            });
+            assert.deepEqual(result[1], { 
+                index: 1, 
+                inverterObject: 'test.inverter2', 
+                controlObject: 'test.inverter2.power_control.limit_nonpersistent_absolute', 
+                value: 2000 
+            });
         });
 
         it('should skip inverters with null values', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves({ val: 1500, ack: true });
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').resolves({ val: null, ack: true });
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves({ val: 1500, ack: true });
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').resolves({ val: null, ack: true });
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 1);
-            assert.deepEqual(result[0], { index: 0, powerControlObject: 'test.inverter1.control', value: 1500 });
-            assert(adapter.log.warn.calledWith('Could not read power limit from inverter 2: test.inverter2.control'));
+            assert.deepEqual(result[0], { 
+                index: 0, 
+                inverterObject: 'test.inverter1', 
+                controlObject: 'test.inverter1.power_control.limit_nonpersistent_absolute', 
+                value: 1500 
+            });
+            assert(logger.warn.calledWith('Could not read power limit from inverter 2: test.inverter2.power_control.current_limit_absolute'));
         });
 
         it('should skip inverters with invalid values', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves({ val: 1500, ack: true });
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').resolves({ val: 'invalid', ack: true });
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves({ val: 1500, ack: true });
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').resolves({ val: 'invalid', ack: true });
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 1);
-            assert.deepEqual(result[0], { index: 0, powerControlObject: 'test.inverter1.control', value: 1500 });
-            assert(adapter.log.warn.calledWith('Invalid power limit value from inverter 2: invalid'));
+            assert.deepEqual(result[0], { 
+                index: 0, 
+                inverterObject: 'test.inverter1', 
+                controlObject: 'test.inverter1.power_control.limit_nonpersistent_absolute', 
+                value: 1500 
+            });
+            assert(logger.warn.calledWith('Invalid power limit value from inverter 2: invalid'));
         });
 
         it('should handle errors from individual inverters', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves({ val: 1500, ack: true });
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').rejects(new Error('Connection failed'));
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves({ val: 1500, ack: true });
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').rejects(new Error('Connection failed'));
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 1);
-            assert.deepEqual(result[0], { index: 0, powerControlObject: 'test.inverter1.control', value: 1500 });
-            assert(adapter.log.error.calledWith('Error reading limit from inverter 2: Connection failed'));
+            assert.deepEqual(result[0], { 
+                index: 0, 
+                inverterObject: 'test.inverter1', 
+                controlObject: 'test.inverter1.power_control.limit_nonpersistent_absolute', 
+                value: 1500 
+            });
+            assert(logger.error.calledWith('Error reading limit from inverter 2: Connection failed'));
         });
 
         it('should return empty array when no inverters respond', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves(null);
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').resolves({ val: undefined, ack: true });
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves(null);
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').resolves({ val: undefined, ack: true });
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 0);
-            assert(adapter.log.warn.calledTwice);
+            assert(logger.warn.calledTwice);
         });
 
         it('should handle string number values correctly', async function() {
             // Arrange
-            adapter.getForeignStateAsync.withArgs('test.inverter1.control').resolves({ val: '1500.5', ack: true });
-            adapter.getForeignStateAsync.withArgs('test.inverter2.control').resolves({ val: '2000', ack: true });
+            getForeignStateAsync.withArgs('test.inverter1.power_control.current_limit_absolute').resolves({ val: '1500.5', ack: true });
+            getForeignStateAsync.withArgs('test.inverter2.power_control.current_limit_absolute').resolves({ val: '2000', ack: true });
             
             // Act
-            const result = await adapter.getAllInverterLimits();
+            const result = await InverterManager.getAllInverterLimits(config, getForeignStateAsync, logger);
             
             // Assert
             assert.equal(result.length, 2);
-            assert.deepEqual(result[0], { index: 0, powerControlObject: 'test.inverter1.control', value: 1500.5 });
-            assert.deepEqual(result[1], { index: 1, powerControlObject: 'test.inverter2.control', value: 2000 });
+            assert.deepEqual(result[0], { 
+                index: 0, 
+                inverterObject: 'test.inverter1', 
+                controlObject: 'test.inverter1.power_control.limit_nonpersistent_absolute', 
+                value: 1500.5 
+            });
+            assert.deepEqual(result[1], { 
+                index: 1, 
+                inverterObject: 'test.inverter2', 
+                controlObject: 'test.inverter2.power_control.limit_nonpersistent_absolute', 
+                value: 2000 
+            });
         });
     });
 });
 
 describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
-    let adapter;
+    const PowerCalculator = require('../lib/power-calculator');
+    let config;
     
     beforeEach(function() {
-        // Create a mock adapter object with the calculateNewClampedLimits method
-        adapter = {
-            config: {
-                inverters: [
-                    { name: 'Inverter 1', maxPower: 2250 },
-                    { name: 'Inverter 2', maxPower: 1800 }
-                ],
-                targetFeedIn: -800
-            },
-            log: {
-                debug: sinon.stub()
-            }
-        };
-        
-        // Add the calculateNewClampedLimits method from main.js
-        adapter.calculateNewClampedLimits = function(currentGridPower, currentLimits) {
-            // Calculate total current limit
-            const totalOldLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
-
-            // Calculate the adjustment needed
-            let newTotalLimit;
-            if (currentGridPower >= 0) {
-                // Consuming from grid - increase PV production
-                newTotalLimit = totalOldLimit + currentGridPower;
-            } else {
-                // Feeding into grid - adjust to reach target feed-in
-                const feedInDifference = currentGridPower - this.config.targetFeedIn;
-                newTotalLimit = Math.max(0, totalOldLimit + feedInDifference);
-            }
-
-            // Distribute the new total limit equally among all inverters
-            const newLimitPerInverter = Math.floor(newTotalLimit / this.config.inverters.length);
-            
-            // Calculate clamped limits for each inverter
-            const newLimits = [];
-            let totalNewLimit = 0;
-            
-            for (const limit of currentLimits) {
-                const inverter = this.config.inverters[limit.index];
-                // Enforce maximum power limit per inverter
-                const clampedLimit = Math.min(newLimitPerInverter, inverter.maxPower || 2250);
-                
-                newLimits.push({
-                    index: limit.index,
-                    controlObject: limit.controlObject,
-                    oldValue: limit.value,
-                    newValue: clampedLimit
-                });
-                
-                totalNewLimit += clampedLimit;
-            }
-
-            return {
-                newLimits,
-                totalOldLimit,
-                totalNewLimit
-            };
+        // Test configuration
+        config = {
+            inverters: [
+                { name: 'Inverter 1', maxPower: 2250 },
+                { name: 'Inverter 2', maxPower: 1800 }
+            ],
+            targetFeedIn: 800
         };
     });
     
@@ -975,14 +932,14 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.totalOldLimit, 1800);
-            assert.equal(result.totalNewLimit, 2300); // 1800 + 500
+            assert.equal(result.totalNewLimit, 3100); // 1800 + 500 + 800 (targetFeedIn)
             assert.equal(result.newLimits.length, 2);
-            assert.equal(result.newLimits[0].newValue, 1150); // Math.floor(2300/2)
-            assert.equal(result.newLimits[1].newValue, 1150);
+            assert.equal(result.newLimits[0].newValue, 1550); // Math.floor(3100/2)
+            assert.equal(result.newLimits[1].newValue, 1550);
         });
 
         it('should decrease limits when feeding into grid beyond target', function() {
@@ -994,7 +951,7 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.totalOldLimit, 3500);
@@ -1014,11 +971,11 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.totalOldLimit, 3500);
-            // Before clamping: Math.floor((3500 + 2000) / 2) = 2750 per inverter
+            // Before clamping: Math.floor((3500 + 2000 + 800) / 2) = 3150 per inverter
             // After clamping: inv1=2250 (max), inv2=1800 (max)
             assert.equal(result.newLimits[0].newValue, 2250); // clamped to maxPower
             assert.equal(result.newLimits[1].newValue, 1800); // clamped to maxPower
@@ -1034,7 +991,7 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.totalOldLimit, 150);
@@ -1054,15 +1011,15 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.totalOldLimit, 1900);
-            // newTotalLimit = 1900 + 100 = 2000
-            // Math.floor(2000/2) = 1000 per inverter
-            assert.equal(result.totalNewLimit, 2000); // 1000 + 1000
-            assert.equal(result.newLimits[0].newValue, 1000);
-            assert.equal(result.newLimits[1].newValue, 1000);
+            // newTotalLimit = 1900 + 100 + 800 = 2800
+            // Math.floor(2800/2) = 1400 per inverter
+            assert.equal(result.totalNewLimit, 2800); // 1400 + 1400
+            assert.equal(result.newLimits[0].newValue, 1400);
+            assert.equal(result.newLimits[1].newValue, 1400);
         });
 
         it('should preserve original values in result object', function() {
@@ -1074,7 +1031,7 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
             assert.equal(result.newLimits[0].index, 0);
@@ -1087,7 +1044,7 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
 
         it('should handle fallback maxPower when not specified', function() {
             // Arrange
-            adapter.config.inverters = [
+            config.inverters = [
                 { name: 'Inverter 1' }, // no maxPower specified
                 { name: 'Inverter 2', maxPower: 1800 }
             ];
@@ -1098,13 +1055,45 @@ describe('ZeroPV Adapter - calculateNewClampedLimits', function() {
             ];
             
             // Act
-            const result = adapter.calculateNewClampedLimits(currentGridPower, currentLimits);
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
             
             // Assert
-            // Before clamping: Math.floor((1800 + 3000) / 2) = 2400 per inverter
+            // Before clamping: Math.floor((1800 + 3000 + 800) / 2) = 2800 per inverter
             // After clamping: inv1=2250 (fallback), inv2=1800 (max)
             assert.equal(result.newLimits[0].newValue, 2250); // fallback to 2250W
             assert.equal(result.newLimits[1].newValue, 1800); // clamped to maxPower
+        });
+
+        it('should correctly calculate for original bug scenario', function() {
+            // Arrange - reproducing the original bug scenario
+            const currentGridPower = 895.669; // consuming from grid
+            const currentLimits = [
+                { index: 0, controlObject: 'test.inv1.control', value: 1435.5 },
+                { index: 1, controlObject: 'test.inv2.control', value: 1435.5 },
+                { index: 2, controlObject: 'test.inv3.control', value: 1435.5 },
+                { index: 3, controlObject: 'test.inv4.control', value: 1435.5 }
+            ];
+            
+            // Update config to match 4-inverter scenario
+            config.inverters = [
+                { name: 'PV1-HMT-2250-6T', maxPower: 2250 },
+                { name: 'PV2-HMT-2250-6T', maxPower: 2250 },
+                { name: 'PV3-HMT-2250-6T', maxPower: 2250 },
+                { name: 'PV4-HMT-2250-6T', maxPower: 2250 }
+            ];
+            
+            // Act
+            const result = PowerCalculator.calculateNewClampedLimits(currentGridPower, currentLimits, config);
+            
+            // Assert
+            assert.equal(result.totalOldLimit, 5742); // 4 * 1435.5
+            // With the fix: newTotalLimit = 5742 + 895.669 + 800 = 7437.669
+            // Per inverter: Math.floor(7437.669 / 4) = 1859
+            assert.equal(result.totalNewLimit, 7436); // 4 * 1859 (due to floor)
+            assert.equal(result.newLimits[0].newValue, 1859);
+            assert.equal(result.newLimits[1].newValue, 1859);
+            assert.equal(result.newLimits[2].newValue, 1859);
+            assert.equal(result.newLimits[3].newValue, 1859);
         });
     });
 });
