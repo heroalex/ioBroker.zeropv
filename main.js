@@ -12,6 +12,9 @@ const utils = require('@iobroker/adapter-core');
 // const fs = require("fs");
 const PowerCalculator = require('./lib/power-calculator');
 const InverterManager = require('./lib/inverter-manager');
+const ConfigValidator = require('./lib/config-validator');
+const ObjectFilter = require('./lib/object-filter');
+const StateManager = require('./lib/state-manager');
 
 class Zeropv extends utils.Adapter {
 
@@ -43,50 +46,12 @@ class Zeropv extends utils.Adapter {
         await this.setState('info.connection', false, true);
 
         // Validate configuration
-        if (!this.config.powerSourceObject) {
-            this.log.error('No power source object configured!');
-            return;
-        }
-
-        if (!this.config.inverters || !Array.isArray(this.config.inverters) || this.config.inverters.length === 0) {
-            this.log.error('No inverters configured!');
-            return;
-        }
-
-        // Validate each inverter configuration
-        for (let i = 0; i < this.config.inverters.length; i++) {
-            const inverter = this.config.inverters[i];
-            if (!inverter.inverterObject) {
-                this.log.error(`Inverter ${i + 1} has no inverter base object configured!`);
-                return;
+        const validationResult = ConfigValidator.validateAndNormalize(this.config, this.log);
+        if (!validationResult.isValid) {
+            for (const error of validationResult.errors) {
+                this.log.error(error);
             }
-            
-            // Validate and enforce maximum power limit
-            if (inverter.maxPower === undefined || inverter.maxPower === null) {
-                inverter.maxPower = 2250;
-                this.log.warn(`Inverter ${i + 1} has no max power configured, using default 2250W`);
-            } else if (inverter.maxPower > 2250) {
-                inverter.maxPower = 2250;
-                this.log.warn(`Inverter ${i + 1} max power exceeded 2250W limit, clamped to 2250W`);
-            } else if (inverter.maxPower < 0) {
-                inverter.maxPower = 2250;
-                this.log.warn(`Inverter ${i + 1} has invalid max power, using default 2250W`);
-            }
-        }
-
-        if (!this.config.pollingInterval || this.config.pollingInterval < 1000) {
-            this.log.warn('Invalid polling interval, using default of 10000ms');
-            this.config.pollingInterval = 10000;
-        }
-
-        if (!this.config.feedInThreshold || this.config.feedInThreshold < 50) {
-            this.log.warn('Invalid inverter limit change threshold, using default of 100W');
-            this.config.feedInThreshold = 100;
-        }
-
-        if (this.config.targetFeedIn === undefined || this.config.targetFeedIn === null || this.config.targetFeedIn < 0) {
-            this.log.warn('Invalid maximum grid export, using default of 800W');
-            this.config.targetFeedIn = 800;
+            return;
         }
 
         this.log.info(`Power source: ${this.config.powerSourceObject}`);
@@ -101,7 +66,11 @@ class Zeropv extends utils.Adapter {
         this.log.info(`Maximum grid export: ${this.config.targetFeedIn}W`);
 
         // Create adapter states
-        await this.createStatesAsync();
+        await StateManager.createStatesAsync(
+            this, 
+            this.config.inverters, 
+            this.getInverterDisplayName.bind(this)
+        );
 
         // Start power monitoring
         this.startPowerMonitoring();
@@ -211,74 +180,11 @@ class Zeropv extends utils.Adapter {
             
             // Merge both results
             Object.assign(allObjects, allDevices);
-            const result = [];
-
-            for (const [id, objData] of Object.entries(allObjects)) {
-                if (!objData || !objData.common) continue;
-
-                let matches = false;
-
-                // Handle power source objects (states with power-related roles)
-                if (filter.type === 'state' && filter.role === 'value.power') {
-                    const role = objData.common.role;
-                    const isPowerRole = role === 'value.power' || role === 'value.power.active' || role === 'value.power.apparent';
-                    
-                    if (objData.type === 'state' && isPowerRole) {
-                        // Only include relevant power sources for grid monitoring
-                        matches = this.isRelevantPowerSource(id, objData);
-                        if (matches) {
-                            this.log.debug(`Including power source: ${id} (role: ${role})`);
-                        } else {
-                            this.log.debug(`Excluding power source: ${id} (role: ${role})`);
-                        }
-                    }
-                }
-                
-                // Handle OpenDTU device objects
-                else if (filter.type === 'device' && filter.name === '*opendtu*') {
-                    if (id.toLowerCase().includes('opendtu')) {
-                        this.log.debug(`Checking OpenDTU object: ${id}, type: ${objData.type}`);
-                        if (objData.type === 'device') {
-                            // Look for inverter device objects (pattern: opendtu.0.123456789)
-                            if (id.match(/^opendtu\.\d+\.\d+$/)) {
-                                this.log.debug(`Found OpenDTU device match: ${id}`);
-                                matches = true;
-                            }
-                        }
-                    }
-                }
-
-                if (matches) {
-                    // Handle display name properly
-                    let displayName = objData.common.name;
-                    if (typeof displayName === 'object') {
-                        displayName = displayName.en || displayName.de || displayName.toString();
-                    }
-                    if (!displayName || displayName === '[object Object]') {
-                        displayName = id;
-                    }
-                    
-                    result.push({
-                        _id: id,
-                        common: {
-                            name: displayName
-                        },
-                        value: id,
-                        label: displayName
-                    });
-                    
-                    this.log.debug(`Added object: ${id} (${displayName})`);
-                }
-            }
-
-            this.log.info(`Found ${result.length} matching objects for filter`);
             
-            // Sort results by display name
-            result.sort((a, b) => {
-                const nameA = (a.common.name || '').toString().toLowerCase();
-                const nameB = (b.common.name || '').toString().toLowerCase();
-                return nameA.localeCompare(nameB);
-            });
+            // Filter objects using ObjectFilter utility
+            const result = ObjectFilter.filterObjects(allObjects, filter, this.log);
+            
+            this.log.info(`Found ${result.length} matching objects for filter`);
 
             if (obj.callback) {
                 this.log.info(`Sending result with ${result.length} items: ${JSON.stringify(result.slice(0, 2))}...`);
@@ -317,132 +223,9 @@ class Zeropv extends utils.Adapter {
      * @returns {boolean} Whether this is a relevant power source
      */
     isRelevantPowerSource(id, objData) {
-        // Exclude OpenDTU inverter power states (we don't want to monitor our own inverters)
-        if (id.toLowerCase().includes('opendtu')) {
-            return false;
-        }
-
-        // Exclude individual phase/input power measurements - we want total power
-        const excludePatterns = [
-            /\.phase_\d+\./,          // AC phase power (opendtu.0.xxxxx.ac.phase_1.power)
-            /\.input_\d+\./,          // DC input power (opendtu.0.xxxxx.dc.input_1.power)
-            /\.ApparentPower[ABC]$/,  // Individual phase apparent power (Shelly)
-            /\.ReactivePower[ABC]$/,  // Individual phase reactive power (Shelly)
-            /\.ActivePower[ABC]$/,    // Individual phase active power (Shelly)
-            /\.power_dc$/,            // DC power from inverters
-        ];
-
-        for (const pattern of excludePatterns) {
-            if (pattern.test(id)) {
-                return false;
-            }
-        }
-
-        // Include total/main power measurements
-        const includePatterns = [
-            /TotalActivePower$/,      // Shelly total active power
-            /TotalApparentPower$/,    // Shelly total apparent power  
-            /\.total\.power$/,        // OpenDTU total power (if we ever want it)
-            /gridPower$/,             // Our own grid power state
-            /totalPower$/,            // Generic total power
-            /activePower$/,           // Main active power (but not phase-specific)
-        ];
-
-        for (const pattern of includePatterns) {
-            if (pattern.test(id)) {
-                return true;
-            }
-        }
-
-        // For other power states, be more selective
-        const name = objData.common.name;
-        if (typeof name === 'string') {
-            const lowerName = name.toLowerCase();
-            // Include if it contains "total" or "grid" or "main" but not "phase" or "input"
-            if ((lowerName.includes('total') || lowerName.includes('grid') || lowerName.includes('main')) 
-                && !lowerName.includes('phase') && !lowerName.includes('input')) {
-                return true;
-            }
-        }
-
-        return false;
+        return ObjectFilter.isRelevantPowerSource(id, objData);
     }
 
-    /**
-     * Create adapter states for power monitoring
-     */
-    async createStatesAsync() {
-        await this.setObjectNotExistsAsync('gridPower', {
-            type: 'state',
-            common: {
-                name: 'Grid power (+ = import, - = export)',
-                type: 'number',
-                role: 'value.power',
-                read: true,
-                write: false,
-                unit: 'W'
-            },
-            native: {}
-        });
-
-        await this.setObjectNotExistsAsync('feedingIn', {
-            type: 'state',
-            common: {
-                name: 'Feeding into grid',
-                type: 'boolean',
-                role: 'indicator',
-                read: true,
-                write: false,
-                def: false
-            },
-            native: {}
-        });
-
-        await this.setObjectNotExistsAsync('currentPowerLimit', {
-            type: 'state',
-            common: {
-                name: 'Current inverter power limit',
-                type: 'number',
-                role: 'value.power',
-                read: true,
-                write: false,
-                unit: 'W'
-            },
-            native: {}
-        });
-
-        await this.setObjectNotExistsAsync('powerControlActive', {
-            type: 'state',
-            common: {
-                name: 'Power control is active',
-                type: 'boolean',
-                role: 'indicator',
-                read: true,
-                write: false,
-                def: false
-            },
-            native: {}
-        });
-
-        // Create states for each inverter
-        for (let i = 0; i < this.config.inverters.length; i++) {
-            const inverter = this.config.inverters[i];
-            const inverterName = await this.getInverterDisplayName(inverter.inverterObject, i);
-            
-            await this.setObjectNotExistsAsync(`inverter${i}.powerLimit`, {
-                type: 'state',
-                common: {
-                    name: `${inverterName} power limit`,
-                    type: 'number',
-                    role: 'value.power',
-                    read: true,
-                    write: false,
-                    unit: 'W'
-                },
-                native: {}
-            });
-        }
-    }
 
     /**
      * Start periodic power monitoring
