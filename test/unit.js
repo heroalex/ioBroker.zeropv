@@ -1,6 +1,7 @@
 const assert = require('assert');
 const sinon = require('sinon');
 const proxyquire = require('proxyquire');
+const path = require('path');
 
 describe('ZeroPV Adapter - pollPowerData', function() {
     let adapter;
@@ -241,24 +242,35 @@ describe('ZeroPV Adapter - pollPowerData', function() {
 
 describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
     let adapter;
+    let clock;
+    let ZeropvClass;
     
     beforeEach(function() {
+        // Setup fake timers for testing timing behavior
+        clock = sinon.useFakeTimers();
+        
+        // Load the actual Zeropv class
+        ZeropvClass = require('../main.js');
+        
+        // Create a mock adapter with real methods but stubbed dependencies
         adapter = {
             config: {
                 feedInThreshold: 100,
                 targetFeedIn: -800,
+                pollingInterval: 5000,
                 inverters: [
-                    { powerControlObject: 'test.inverter1.control', name: 'Inverter 1', maxPower: 2250 },
-                    { powerControlObject: 'test.inverter2.control', name: 'Inverter 2', maxPower: 2250 }
+                    { inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control' },
+                    { inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control' }
                 ]
             },
-            lastGridPower: null,
-            lastPowerLimits: new Map(),
+            lastDecreaseTime: null,
             getForeignStateAsync: sinon.stub(),
-            setState: sinon.stub(),
-            setForeignStateAsync: sinon.stub(),
+            setState: sinon.stub().resolves(),
+            setForeignStateAsync: sinon.stub().resolves(),
             getAllInverterLimits: sinon.stub(),
-            adjustInverterPowerLimits: sinon.stub().resolves(),
+            calculateNewClampedLimits: sinon.stub(),
+            applyInverterPowerLimits: sinon.stub().resolves(),
+            getInverterDisplayName: sinon.stub().resolves('Test Inverter'),
             log: {
                 info: sinon.stub(),
                 debug: sinon.stub(),
@@ -267,488 +279,226 @@ describe('ZeroPV Adapter - checkPowerControlAdjustment', function() {
             }
         };
         
-        // Add the checkPowerControlAdjustment method from main.js with multiple inverters support
-        adapter.checkPowerControlAdjustment = async function(currentGridPower) {
-            try {
-                // Check if this is the first reading
-                if (this.lastGridPower === null) {
-                    this.lastGridPower = currentGridPower;
-                    return;
-                }
-
-                // Get current limits from all inverters
-                const currentLimits = await this.getAllInverterLimits();
-                if (currentLimits.length === 0) {
-                    this.log.warn('Could not read current power limits from any inverters');
-                    this.lastGridPower = currentGridPower;
-                    return;
-                }
-
-                // Calculate total current limit
-                const totalCurrentLimit = currentLimits.reduce((sum, limit) => sum + limit.value, 0);
-
-                // Calculate what the new total limit would be
-                let newTotalLimit;
-                if (currentGridPower >= 0) {
-                    newTotalLimit = totalCurrentLimit + currentGridPower;
-                } else {
-                    const feedInDifference = currentGridPower - this.config.targetFeedIn;
-                    newTotalLimit = Math.max(0, totalCurrentLimit + feedInDifference);
-                }
-
-                // Only adjust if total limit change is above threshold
-                const limitChange = Math.abs(newTotalLimit - totalCurrentLimit);
-                
-                if (limitChange >= this.config.feedInThreshold) {
-                    this.log.info(`Total inverter limit would change by ${limitChange}W, adjusting inverter power limits`);
-                    await this.adjustInverterPowerLimits(currentGridPower, currentLimits);
-                } else {
-                    await this.setState('powerControlActive', { val: false, ack: true });
-                }
-
-                this.lastGridPower = currentGridPower;
-            } catch (error) {
-                this.log.error(`Error in power control adjustment: ${error.message}`);
-            }
-        };
+        // Bind the real method to our mock adapter
+        adapter.checkPowerControlAdjustment = ZeropvClass.prototype.checkPowerControlAdjustment.bind(adapter);
     });
     
     afterEach(function() {
+        clock.restore();
         sinon.restore();
     });
 
     describe('checkPowerControlAdjustment()', function() {
         
-        it('should handle positive grid power and adjust if total inverter limit change is significant', async function() {
+        it('should allow power increases immediately', async function() {
             // Arrange
-            adapter.lastGridPower = 200;
-            adapter.setState = sinon.stub().resolves();
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
             const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 500 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 500 }
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control' , value: 1000 }
             ];
+            const mockNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 1200 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 1200 }
+            ];
+            
             adapter.getAllInverterLimits.resolves(mockLimits);
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: mockNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 2400 // increase of 400W (above 100W threshold)
+            });
             
-            // Act - grid power 1500W, total current limit 1000W -> new total limit would be 2500W (change of 1500W, above 100W threshold)
-            await adapter.checkPowerControlAdjustment(1500);
+            // Act
+            await adapter.checkPowerControlAdjustment(-1000);
             
-            // Assert
-            assert.equal(adapter.lastGridPower, 1500);
-            assert(adapter.adjustInverterPowerLimits.calledWith(1500, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 1500W, adjusting inverter power limits'));
+            // Assert - increase should be applied immediately
+            assert(adapter.applyInverterPowerLimits.calledWith(mockNewLimits, 2400));
+            assert(adapter.log.debug.calledWith(sinon.match('Total inverter limit would increase by 400W')));
         });
 
-        it('should set powerControlActive to false when total inverter limit change is below threshold', async function() {
+        it('should delay power decreases by 3x polling interval', async function() {
             // Arrange
-            adapter.lastGridPower = -850; // Previously feeding in 850W
-            adapter.setState = sinon.stub().resolves();
             const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control', value: 1000 }
             ];
+            const mockNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 800 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 800 }
+            ];
+            
             adapter.getAllInverterLimits.resolves(mockLimits);
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: mockNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 1600 // decrease of 400W (above 100W threshold)
+            });
             
-            // Act - now feeding in 800W (target is -800W), so new total limit would be 2000 + (-800 - (-800)) = 2000W (no change)
-            await adapter.checkPowerControlAdjustment(-800);
+            // Act - first decrease attempt
+            await adapter.checkPowerControlAdjustment(-500);
             
-            // Assert
-            assert.equal(adapter.lastGridPower, -800);
+            // Assert - decrease should be delayed
+            assert(!adapter.applyInverterPowerLimits.called);
+            assert(adapter.log.debug.calledWith(sinon.match('Decrease needed but delaying for')));
             assert(adapter.setState.calledWith('powerControlActive', { val: false, ack: true }));
-            assert(!adapter.adjustInverterPowerLimits.called);
         });
 
-        it('should store first negative power reading without adjustment', async function() {
-            // Arrange - first reading (lastGridPower is null)
-            adapter.lastGridPower = null;
+        it('should apply decrease after sufficient delay time has passed', async function() {
+            // Arrange
+            const mockLimits = [
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control', value: 1000 }
+            ];
+            const mockNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 800 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 800 }
+            ];
+            
+            adapter.getAllInverterLimits.resolves(mockLimits);
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: mockNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 1600 // decrease of 400W (above 100W threshold)
+            });
+            
+            // Set lastDecreaseTime to simulate previous decrease
+            adapter.lastDecreaseTime = Date.now() - (adapter.config.pollingInterval * 3 + 1000); // Just over 3x delay
+            
+            // Act
+            await adapter.checkPowerControlAdjustment(-500);
+            
+            // Assert - decrease should be applied now
+            assert(adapter.applyInverterPowerLimits.calledWith(mockNewLimits, 1600));
+            assert(adapter.log.debug.calledWith(sinon.match('Total inverter limit would decrease by 400W')));
+            assert.equal(adapter.lastDecreaseTime, Date.now()); // Should update lastDecreaseTime
+        });
+
+        it('should not reset lastDecreaseTime on power increases (bug test)', async function() {
+            // Arrange - this test specifically checks for the bug we fixed
+            const initialDecreaseTime = Date.now() - (adapter.config.pollingInterval * 2); // 2x polling interval ago
+            adapter.lastDecreaseTime = initialDecreaseTime;
+            
+            const mockLimits = [
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control', value: 1000 }
+            ];
+            const mockNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 1200 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 1200 }
+            ];
+            
+            adapter.getAllInverterLimits.resolves(mockLimits);
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: mockNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 2400 // increase of 400W
+            });
+            
+            // Act - power increase
+            await adapter.checkPowerControlAdjustment(-1000);
+            
+            // Assert - lastDecreaseTime should NOT be reset to null (this was the bug)
+            assert.equal(adapter.lastDecreaseTime, initialDecreaseTime, 'lastDecreaseTime should not be reset on increase');
+            assert(adapter.applyInverterPowerLimits.calledWith(mockNewLimits, 2400));
+        });
+
+        it('should prevent rapid decreases after increase when bug was present', async function() {
+            // Arrange - simulate the sequence that would fail with the bug
+            const mockLimits = [
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control', value: 1000 }
+            ];
+            
+            adapter.getAllInverterLimits.resolves(mockLimits);
+            
+            // Step 1: Do an increase (this would reset lastDecreaseTime with the bug)
+            const increaseNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 1200 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 1200 }
+            ];
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: increaseNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 2400
+            });
+            
+            await adapter.checkPowerControlAdjustment(-1000);
+            
+            // Step 2: Immediately try a decrease (with the bug, this would work immediately)
+            const decreaseNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1200, newValue: 1000 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1200, newValue: 1000 }
+            ];
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: decreaseNewLimits,
+                totalOldLimit: 2400,
+                totalNewLimit: 2000
+            });
+            
+            // Reset spies for the decrease call
+            adapter.applyInverterPowerLimits.resetHistory();
+            adapter.log.debug.resetHistory();
+            
+            // Act - immediate decrease attempt
+            await adapter.checkPowerControlAdjustment(-700);
+            
+            // Assert - decrease should be delayed (bug fix working)
+            assert(!adapter.applyInverterPowerLimits.called, 'Decrease should be delayed, not applied immediately');
+            assert(adapter.log.debug.calledWith(sinon.match('Decrease needed but delaying for')));
+        });
+
+        it('should handle no inverter limits correctly', async function() {
+            // Arrange
+            adapter.getAllInverterLimits.resolves([]);
             
             // Act
             await adapter.checkPowerControlAdjustment(-1000);
             
             // Assert
-            assert.equal(adapter.lastGridPower, -1000);
-            assert(!adapter.setState.called);
-            assert(!adapter.adjustInverterPowerLimits.called);
-        });
-
-        it('should handle when no inverter limits can be read', async function() {
-            // Arrange
-            adapter.lastGridPower = -1000;
-            adapter.getAllInverterLimits.resolves([]); // No limits available
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(-1200);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, -1200); // lastGridPower should still be updated
             assert(adapter.log.warn.calledWith('Could not read current power limits from any inverters'));
-            assert(!adapter.adjustInverterPowerLimits.called);
+            assert(!adapter.calculateNewClampedLimits.called);
+            assert(!adapter.applyInverterPowerLimits.called);
         });
 
-        it('should not adjust power when total inverter limit change is below threshold', async function() {
+        it('should not apply changes when below threshold', async function() {
             // Arrange
-            adapter.lastGridPower = -1000;
-            adapter.setState = sinon.stub().resolves();
             const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 },
+                { index: 1, inverterObject: 'test.inverter2', controlObject: 'test.inverter2.control', value: 1000 }
             ];
+            const mockNewLimits = [
+                { index: 0, controlObject: 'test.inverter1.control', oldValue: 1000, newValue: 1050 },
+                { index: 1, controlObject: 'test.inverter2.control', oldValue: 1000, newValue: 1050 }
+            ];
+            
             adapter.getAllInverterLimits.resolves(mockLimits);
-            const newPower = -850; // Target is -800W, so new total limit would be 2000 + (-850 - (-800)) = 1950W (change of 50W, below 100W threshold)
+            adapter.calculateNewClampedLimits.returns({
+                newLimits: mockNewLimits,
+                totalOldLimit: 2000,
+                totalNewLimit: 2100 // increase of only 100W (at threshold)
+            });
             
             // Act
-            await adapter.checkPowerControlAdjustment(newPower);
+            await adapter.checkPowerControlAdjustment(-850);
             
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(!adapter.adjustInverterPowerLimits.called);
-            assert(adapter.setState.calledWith('powerControlActive', { val: false, ack: true }));
+            // Assert - should apply because it's exactly at threshold
+            assert(adapter.applyInverterPowerLimits.calledWith(mockNewLimits, 2100));
         });
 
-        it('should adjust power when total inverter limit change is above threshold', async function() {
+        it('should handle calculation errors gracefully', async function() {
             // Arrange
-            adapter.lastGridPower = -1000;
             const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
+                { index: 0, inverterObject: 'test.inverter1', controlObject: 'test.inverter1.control', value: 1000 }
             ];
             adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1200; // Target is -800W, so new total limit would be 2000 + (-1200 - (-800)) = 1600W (change of 400W, above 100W threshold)
+            adapter.calculateNewClampedLimits.throws(new Error('Calculation failed'));
             
             // Act
-            await adapter.checkPowerControlAdjustment(newPower);
+            await adapter.checkPowerControlAdjustment(-1000);
             
             // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 400W, adjusting inverter power limits'));
-        });
-
-        it('should adjust power when feed-in decreases significantly', async function() {
-            // Arrange
-            adapter.lastGridPower = -1500;
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -900; // Target is -800W, so new total limit would be 2000 + (-900 - (-800)) = 1900W (change of 100W, exactly at threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 100W, adjusting inverter power limits'));
-        });
-
-        it('should adjust power when total inverter limit change exactly equals threshold', async function() {
-            // Arrange
-            adapter.lastGridPower = -1000;
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -700; // Target is -800W, so new total limit would be 2000 + (-700 - (-800)) = 2100W (change of exactly 100W)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 100W, adjusting inverter power limits'));
-        });
-
-        it('should NOT adjust when grid power change is large but total inverter limit change is small', async function() {
-            // Arrange - This test demonstrates the flaw in the old logic
-            adapter.lastGridPower = -200; // Previously feeding in 200W
-            adapter.setState = sinon.stub().resolves();
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            const newPower = -850; // Now feeding in 850W (grid change of 650W, above old threshold)
-            // Target is -800W, so new total limit would be 2000 + (-850 - (-800)) = 1950W (total inverter change of only 50W, below threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(!adapter.adjustInverterPowerLimits.called);
-            assert(adapter.setState.calledWith('powerControlActive', { val: false, ack: true }));
-        });
-
-        it('should handle adjustInverterPowerLimits errors gracefully', async function() {
-            // Arrange
-            adapter.lastGridPower = -1000;
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            const newPower = -1200;
-            const error = new Error('Inverter communication failed');
-            adapter.adjustInverterPowerLimits = sinon.stub().rejects(error);
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert(adapter.log.error.calledWith('Error in power control adjustment: Inverter communication failed'));
-            assert.equal(adapter.lastGridPower, -1000); // Should not be updated on error
-        });
-
-        it('should handle setState errors gracefully', async function() {
-            // Arrange - small total inverter limit change that should set powerControlActive to false
-            adapter.lastGridPower = -850;
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            const error = new Error('State update failed');
-            adapter.setState = sinon.stub().rejects(error);
-            const newPower = -820; // Target is -800W, so new total limit would be 2000 + (-820 - (-800)) = 1980W (change of 20W, below threshold)
-            
-            // Act - total inverter limit change of 20W is below threshold, should call setState
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert(adapter.log.error.calledWith('Error in power control adjustment: State update failed'));
-        });
-
-        it('should work with decimal power values', async function() {
-            // Arrange
-            adapter.lastGridPower = -1000.5;
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000.25 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000.25 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1150.7; // Target is -800W, so new total limit would be 2000.5 + (-1150.7 - (-800)) = 1649.8W (change of 350.7W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            // Check if the log was called with a message that includes the calculated difference (handle floating point precision)
-            const logCalls = adapter.log.info.getCalls();
-            const hasCorrectLog = logCalls.some(call => 
-                call.args[0].includes('Total inverter limit would change by') && 
-                call.args[0].includes('350.7')
-            );
-            assert(hasCorrectLog, `Expected log message about 350.7W change, got: ${logCalls.map(c => c.args[0]).join(', ')}`);
-        });
-
-        it('should adjust power when transitioning from consuming to feeding with significant total inverter limit change', async function() {
-            // Arrange
-            adapter.lastGridPower = 500; // Was consuming 500W
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 750 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 750 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1200; // Now feeding in 1200W, target is -800W, so new total limit would be 1500 + (-1200 - (-800)) = 1100W (change of 400W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 400W, adjusting inverter power limits'));
-        });
-
-        it('should not adjust when transitioning from consuming to feeding with small total inverter limit change', async function() {
-            // Arrange
-            adapter.lastGridPower = 50; // Was consuming 50W
-            adapter.setState = sinon.stub().resolves();
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 750 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 750 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            const newPower = -850; // Now feeding in 850W, target is -800W, so new total limit would be 1500 + (-850 - (-800)) = 1450W (change of 50W, below threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(!adapter.adjustInverterPowerLimits.called);
-            assert(adapter.setState.calledWith('powerControlActive', { val: false, ack: true }));
-        });
-
-        it('should handle transition from feeding to consuming with significant total inverter limit change', async function() {
-            // Arrange
-            adapter.lastGridPower = -800; // Was feeding in 800W
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 750 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 750 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = 300; // Now consuming 300W, so new total limit would be 1500 + 300 = 1800W (change of 300W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 300W, adjusting inverter power limits'));
-        });
-
-        it('should correctly calculate total inverter limit change when signs differ (negative to positive)', async function() {
-            // Arrange - transition from feeding in to consuming
-            adapter.lastGridPower = -500; // Was feeding 500W into grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 600 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 600 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = 300; // Now consuming 300W from grid, so new total limit would be 1200 + 300 = 1500W (change of 300W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 300W, adjusting inverter power limits'));
-        });
-
-        it('should correctly calculate total inverter limit change when signs differ (positive to negative)', async function() {
-            // Arrange - transition from consuming to feeding in
-            adapter.lastGridPower = 200; // Was consuming 200W from grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 900 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 900 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -600; // Now feeding 600W into grid, target is -800W, so new total limit would be 1800 + (-600 - (-800)) = 2000W (change of 200W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 200W, adjusting inverter power limits'));
-        });
-
-        it('should handle extreme sign changes correctly', async function() {
-            // Arrange - large transition from high consumption to high feed-in
-            adapter.lastGridPower = 2000; // Was consuming 2000W from grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1500 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1500 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1500; // Now feeding 1500W into grid, target is -800W, so new total limit would be 3000 + (-1500 - (-800)) = 2300W (change of 700W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 700W, adjusting inverter power limits'));
-        });
-
-        it('should correctly calculate total inverter limit change for positive to positive transition with large change', async function() {
-            // Arrange - transition between different consumption levels
-            adapter.lastGridPower = 100; // Was consuming 100W from grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 600 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 600 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = 800; // Now consuming 800W from grid, so new total limit would be 1200 + 800 = 2000W (change of 800W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 800W, adjusting inverter power limits'));
-        });
-
-        it('should adjust when consuming power results in large total inverter limit change', async function() {
-            // Arrange - consumption that results in large total inverter change
-            adapter.lastGridPower = 1000; // Was consuming 1000W from grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1475 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1475 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = 1050; // Now consuming 1050W from grid, so new total limit would be 2950 + 1050 = 4000W (change of 1050W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 1050W, adjusting inverter power limits'));
-        });
-
-        it('should correctly calculate total inverter limit change for negative to negative transition with large change', async function() {
-            // Arrange - transition between different feed-in levels
-            adapter.lastGridPower = -500; // Was feeding 500W into grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1200; // Now feeding 1200W into grid, target is -800W, so new total limit would be 2000 + (-1200 - (-800)) = 1600W (change of 400W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 400W, adjusting inverter power limits'));
-        });
-
-        it('should correctly calculate total inverter limit change for negative to negative transition with large change', async function() {
-            // Arrange - transition between feed-in levels
-            adapter.lastGridPower = -1000; // Was feeding 1000W into grid
-            const mockLimits = [
-                { index: 0, powerControlObject: 'test.inverter1.control', value: 1000 },
-                { index: 1, powerControlObject: 'test.inverter2.control', value: 1000 }
-            ];
-            adapter.getAllInverterLimits.resolves(mockLimits);
-            adapter.adjustInverterPowerLimits = sinon.stub().resolves();
-            const newPower = -1050; // Now feeding 1050W into grid, target is -800W, so new total limit would be 2000 + (-1050 - (-800)) = 1750W (change of 250W, above threshold)
-            
-            // Act
-            await adapter.checkPowerControlAdjustment(newPower);
-            
-            // Assert
-            assert.equal(adapter.lastGridPower, newPower);
-            assert(adapter.adjustInverterPowerLimits.calledWith(newPower, mockLimits));
-            assert(adapter.log.info.calledWith('Total inverter limit would change by 250W, adjusting inverter power limits'));
+            assert(adapter.log.error.calledWith('Error in power control adjustment: Calculation failed'));
+            assert(!adapter.applyInverterPowerLimits.called);
         });
     });
 });

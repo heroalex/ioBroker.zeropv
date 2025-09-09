@@ -307,7 +307,6 @@ class Zeropv extends utils.Adapter {
                 if (!isDecrease) {
                     this.log.debug(`Total inverter limit would increase by ${actualLimitChange}W (after clamping), adjusting inverter power limits`);
                     await this.applyInverterPowerLimits(newLimits, totalNewLimit);
-                    this.lastDecreaseTime = null; // reset decrease timer on increase
                 } else {
                     // For decreases, check if enough time has passed since last decrease
                     const decreaseDelay = this.config.pollingInterval * 3; // 3x polling interval delay
