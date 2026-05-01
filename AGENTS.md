@@ -17,7 +17,6 @@ This is an ioBroker adapter called "zeropv" that controls photovoltaic inverter 
 ### Development Tools
 - `npm run translate` - Translates adapter texts to all required languages using @iobroker/adapter-dev
 - `npm run release` - Creates a new release using @alcalzone/release-script
-- `dev-server watch` - Runs development server for testing (ioBroker.admin at http://localhost:8081/)
 
 ## Architecture
 
@@ -36,7 +35,7 @@ The adapter follows standard ioBroker patterns:
 - Configuration managed via native properties in io-package.json
 
 ### Configuration
-- Two sample configuration options (option1: checkbox, option2: text input)
+- Configuration includes power source selection, inverter management table, polling interval, feed-in threshold, and target grid export settings
 - Multi-language support with i18n translations in admin/i18n/
 - Admin UI uses JSON configuration panel
 
@@ -49,12 +48,12 @@ The adapter follows standard ioBroker patterns:
 ## Development Notes
 
 ### Current State
-- Template-based initial implementation with placeholder code
-- Requires implementation of actual OpenDTU integration logic
-- Sample configuration options need to be replaced with actual PV control parameters
+- Implements active power monitoring and inverter control via OpenDTU integration
+- Custom modules for power calculation, inverter management, state management, and config validation
+- JSON-based admin configuration with selectSendTo components for object selection
 
 ### Key Integration Points
-- Will need to integrate with OpenDTU API for inverter control
+- Integrates with OpenDTU API via InverterManager for inverter control
 - State management for PV system data and grid feed-in metrics
 - Configuration for OpenDTU connection parameters and control thresholds
 
