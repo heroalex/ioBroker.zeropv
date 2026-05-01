@@ -247,5 +247,86 @@ describe('ConfigValidator', function() {
             assert.strictEqual(config.feedInThreshold, 100);
             assert.strictEqual(config.targetFeedIn, 800);
         });
+
+        it('should accept valid price configuration', function() {
+            // Arrange
+            const config = {
+                powerSourceObject: 'shelly.0.TotalActivePower',
+                inverters: [{ inverterObject: 'opendtu.0.123456789', maxPower: 2000 }],
+                pollingInterval: 5000,
+                feedInThreshold: 150,
+                targetFeedIn: 600,
+                priceSourceObject: 'tibberlink.0.Homes.xxx.CurrentPrice.total',
+                priceThreshold: -0.05
+            };
+
+            // Act
+            const result = ConfigValidator.validateAndNormalize(config, logger);
+
+            // Assert
+            assert.strictEqual(result.isValid, true);
+            assert.strictEqual(result.errors.length, 0);
+            assert.strictEqual(config.priceThreshold, -0.05);
+        });
+
+        it('should reject invalid priceSourceObject (empty string)', function() {
+            // Arrange
+            const config = {
+                powerSourceObject: 'shelly.0.TotalActivePower',
+                inverters: [{ inverterObject: 'opendtu.0.123456789', maxPower: 2000 }],
+                pollingInterval: 5000,
+                feedInThreshold: 150,
+                targetFeedIn: 600,
+                priceSourceObject: '',
+                priceThreshold: 0
+            };
+
+            // Act
+            const result = ConfigValidator.validateAndNormalize(config, logger);
+
+            // Assert
+            assert.strictEqual(result.isValid, false);
+            assert(result.errors.includes('Invalid price source object: must be a non-empty string'));
+        });
+
+        it('should default priceThreshold to 0 when invalid', function() {
+            // Arrange
+            const config = {
+                powerSourceObject: 'shelly.0.TotalActivePower',
+                inverters: [{ inverterObject: 'opendtu.0.123456789', maxPower: 2000 }],
+                pollingInterval: 5000,
+                feedInThreshold: 150,
+                targetFeedIn: 600,
+                priceSourceObject: 'tibberlink.0.Homes.xxx.CurrentPrice.total',
+                priceThreshold: 'invalid'
+            };
+
+            // Act
+            const result = ConfigValidator.validateAndNormalize(config, logger);
+
+            // Assert
+            assert.strictEqual(result.isValid, true);
+            assert.strictEqual(config.priceThreshold, 0);
+            assert(logger.warn.calledWith('Invalid price threshold, defaulting to 0 €/kWh'));
+        });
+
+        it('should work without priceSourceObject (feature disabled)', function() {
+            // Arrange
+            const config = {
+                powerSourceObject: 'shelly.0.TotalActivePower',
+                inverters: [{ inverterObject: 'opendtu.0.123456789', maxPower: 2000 }],
+                pollingInterval: 5000,
+                feedInThreshold: 150,
+                targetFeedIn: 600
+                // No priceSourceObject - feature disabled
+            };
+
+            // Act
+            const result = ConfigValidator.validateAndNormalize(config, logger);
+
+            // Assert
+            assert.strictEqual(result.isValid, true);
+            assert.strictEqual(result.errors.length, 0);
+        });
     });
 });

@@ -34,6 +34,9 @@ class Zeropv extends utils.Adapter {
         
         this.pollingTimer = null;
         this.lastDecreaseTime = null; // timestamp of last power decrease
+        this.priceShutdownActive = false;
+        this.isStabilizing = false;
+        this.priceStabilizationTimer = null;
     }
 
     /**
@@ -69,13 +72,20 @@ class Zeropv extends utils.Adapter {
         await StateManager.createStatesAsync(
             this, 
             this.config.inverters, 
-            this.getInverterDisplayName.bind(this)
+            this.getInverterDisplayName.bind(this),
+            this.config
         );
 
         // Start power monitoring
         this.startPowerMonitoring();
 
         await this.setState('info.connection', true, true);
+
+        // Log price config if enabled
+        if (this.config.priceSourceObject) {
+            this.log.info(`Price source: ${this.config.priceSourceObject}`);
+            this.log.info(`Price shutdown threshold: ${this.config.priceThreshold} €/kWh`);
+        }
     }
 
     /**
@@ -87,6 +97,11 @@ class Zeropv extends utils.Adapter {
             if (this.pollingTimer) {
                 clearTimeout(this.pollingTimer);
                 this.pollingTimer = null;
+            }
+            if (this.priceStabilizationTimer) {
+                clearTimeout(this.priceStabilizationTimer);
+                this.priceStabilizationTimer = null;
+                this.isStabilizing = false;
             }
             this.log.info('ZeroPV adapter stopped');
             callback();
@@ -253,8 +268,25 @@ class Zeropv extends utils.Adapter {
                     
                     this.log.debug(`Grid power: ${powerValue}W, Feeding in: ${isFeedingIn}`);
                     
-                    // Check if power control adjustment is needed
-                    await this.checkPowerControlAdjustment(powerValue);
+                    // Check price shutdown if configured
+                    if (this.config.priceSourceObject) {
+                        const priceState = await this.getForeignStateAsync(this.config.priceSourceObject);
+                        if (priceState?.val !== undefined) {
+                            const currentPrice = parseFloat(priceState.val);
+                            if (!isNaN(currentPrice)) {
+                                await this.setState('currentPrice', { val: currentPrice, ack: true });
+                                await this.checkPriceShutdown(currentPrice);
+                            }
+                        }
+                    }
+
+                    // Skip normal control if price shutdown or stabilization is active
+                    if (!this.priceShutdownActive && !this.isStabilizing) {
+                        // Check if power control adjustment is needed
+                        await this.checkPowerControlAdjustment(powerValue);
+                    } else {
+                        await this.setState('powerControlActive', { val: false, ack: true });
+                    }
                 } else {
                     this.log.warn(`Invalid power value from ${this.config.powerSourceObject}: ${powerState.val}`);
                 }
@@ -327,6 +359,64 @@ class Zeropv extends utils.Adapter {
         } catch (error) {
             this.log.error(`Error in power control adjustment: ${error.message}`);
         }
+    }
+
+    /**
+     * Check if price shutdown is needed based on current price
+     * @param {number} currentPrice Current grid feed-in price (€/kWh)
+     */
+    async checkPriceShutdown(currentPrice) {
+        const HYSTERESIS = 0.01;
+        const threshold = this.config.priceThreshold ?? 0;
+        const recoveryThreshold = threshold + HYSTERESIS;
+
+        // Shutdown condition: price <= threshold
+        if (currentPrice <= threshold) {
+            if (!this.priceShutdownActive) {
+                // Clear any pending stabilization timer
+                if (this.priceStabilizationTimer) {
+                    clearTimeout(this.priceStabilizationTimer);
+                    this.priceStabilizationTimer = null;
+                    this.isStabilizing = false;
+                }
+
+                this.log.info(`Price ${currentPrice} ≤ ${threshold} €/kWh: shutting down inverters`);
+                await InverterManager.powerOffAllInverters(
+                    this.config,
+                    this.setForeignStateAsync.bind(this),
+                    this.log
+                );
+                this.priceShutdownActive = true;
+                await this.setState('priceShutdownActive', { val: true, ack: true });
+            }
+        } 
+        // Recovery condition: price > threshold + hysteresis
+        else if (currentPrice > recoveryThreshold) {
+            if (this.priceShutdownActive && !this.isStabilizing) {
+                this.log.info(`Price ${currentPrice} > ${recoveryThreshold} €/kWh: powering on inverters, waiting 30s to stabilize`);
+                
+                // Power on all inverters
+                await InverterManager.powerOnAllInverters(
+                    this.config,
+                    this.setForeignStateAsync.bind(this),
+                    this.log
+                );
+                
+                this.priceShutdownActive = false;
+                await this.setState('priceShutdownActive', { val: false, ack: true });
+                
+                // Start 30s stabilization timer
+                this.isStabilizing = true;
+                this.priceStabilizationTimer = setTimeout(async () => {
+                    this.isStabilizing = false;
+                    this.priceStabilizationTimer = null;
+                    this.log.info('Stabilization complete, resuming normal power control');
+                    // Trigger immediate poll to restore correct power limits
+                    await this.pollPowerData();
+                }, 30000);
+            }
+        }
+        // Else: price is in hysteresis zone, do nothing
     }
 
     /**
