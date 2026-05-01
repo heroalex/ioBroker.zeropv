@@ -51,11 +51,15 @@ The adapter follows standard ioBroker patterns:
 - Implements active power monitoring and inverter control via OpenDTU integration
 - Custom modules for power calculation, inverter management, state management, and config validation
 - JSON-based admin configuration with selectSendTo components for object selection
+- Automatic inverter shutdown when grid feed-in prices turn negative (e.g., TibberLink integration)
+- Price-based control uses OpenDTU power_off/power_on commands via InverterManager
 
 ### Key Integration Points
-- Integrates with OpenDTU API via InverterManager for inverter control
+- Integrates with OpenDTU API via InverterManager for inverter control (power limits, power off/on)
+- Integrates with price sources (e.g., TibberLink) for negative price detection and shutdown
 - State management for PV system data and grid feed-in metrics
 - Configuration for OpenDTU connection parameters and control thresholds
+- Price shutdown feature with 0.01€/kWh hysteresis and 30s post-recovery stabilization
 
 ### Dependencies
 - Requires Node.js >= 18
