@@ -85,7 +85,9 @@
         "pollingInterval": 10000,
         "inverters": [],
         "feedInThreshold": 100,
-        "targetFeedIn": 800
+        "targetFeedIn": 800,
+        "priceSourceObject": "",
+        "priceThreshold": 0
     },
     "objects": [],
     "instanceObjects": [
@@ -159,6 +161,32 @@
                 "read": true,
                 "write": false,
                 "def": false
+            },
+            "native": {}
+        },
+        {
+            "_id": "priceShutdownActive",
+            "type": "state",
+            "common": {
+                "role": "indicator",
+                "name": "Price shutdown active",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        },
+        {
+            "_id": "currentPrice",
+            "type": "state",
+            "common": {
+                "role": "value",
+                "name": "Current grid feed-in price",
+                "type": "number",
+                "read": true,
+                "write": false,
+                "unit": "€/kWh"
             },
             "native": {}
         }

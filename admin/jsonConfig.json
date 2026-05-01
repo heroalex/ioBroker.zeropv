@@ -63,6 +63,22 @@
             "step": 1,
             "default": 800,
             "newLine": true
+        },
+        "priceSourceObject": {
+            "type": "selectSendTo",
+            "label": "Price source object ID (optional)",
+            "help": "Select state for grid feed-in price (e.g., TibberLink)",
+            "command": "getObjects",
+            "jsonData": "{\"type\": \"state\", \"role\": \"value\"}",
+            "newLine": true
+        },
+        "priceThreshold": {
+            "type": "number",
+            "label": "Price shutdown threshold (€/kWh)",
+            "help": "Shutdown inverters when price ≤ this value",
+            "default": 0,
+            "step": 0.01,
+            "newLine": true
         }
     }
 }
